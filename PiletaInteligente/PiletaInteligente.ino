@@ -6,8 +6,8 @@
 //   sobre el mismo ESP32, controlables desde un bot de Telegram:
 //
 //     1) CALENTADOR   -> Sensor de temperatura DS18B20 + relé.
-//                        Automático con histéresis, o forzado
-//                        ON/OFF desde Telegram.
+//                        Arranca APAGADO; se activa desde Telegram
+//                        (automático con histéresis, o forzado ON).
 //     2) LUCES DISCO  -> Sensor de sonido + 4 LEDs que bailan
 //                        al ritmo de la música (análisis FFT).
 //                        Arrancan APAGADAS; se activan desde Telegram.
@@ -116,7 +116,7 @@ UniversalTelegramBot bot(BOT_TOKEN, client);
 
 // --- Calentador ---
 enum ModoCalentador { CALEF_AUTO, CALEF_ON, CALEF_OFF };
-ModoCalentador modoCalentador = CALEF_AUTO;   // Por defecto: automático por temperatura
+ModoCalentador modoCalentador = CALEF_OFF;   // Por defecto: apagado (se activa desde Telegram)
 bool  calentadorEncendido = false;
 float ultimaTemp = 0.0;
 bool  sensorTempOk = false;
@@ -180,7 +180,7 @@ void setup() {
   conectarWiFiTelegram();
 
   Serial.println("Sistema listo.");
-  Serial.println("Calentador: AUTO | Luces: OFF (se activan desde Telegram).");
+  Serial.println("Calentador: OFF | Luces: OFF (ambos se activan desde Telegram).");
 }
 
 // ============================================================
