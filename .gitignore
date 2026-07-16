@@ -1,0 +1,7 @@
+# Datos privados (WiFi + token de Telegram): NO se suben a GitHub.
+# Cada uno completa su propio config.h a partir de config.example.h.
+PiletaInteligente/config.h
+
+# Temporales del sistema
+Thumbs.db
+.DS_Store

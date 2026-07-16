@@ -1,49 +1,53 @@
 # Control de avances — Pileta Inteligente
 
+> Programa principal: **`PiletaInteligente/PiletaInteligente.ino`** (calentador + luces + Telegram, todo en un solo archivo).
+
 ## Sistema 1 — Calentador automático
 
-- [x] Código base escrito (`prueba_sensor.ino`)
-- [x] Sensor DS18B20 conectado y leyendo temperatura
-- [x] LCD 16x02 con I2C conectado y mostrando datos
-- [x] LED verde (calentador ON) y LED rojo (calentador OFF) conectados
-- [x] Módulo relé conectado al ESP32 (GPIO26)
-- [x] Probar ciclo completo: sensor en agua fría → relé hace click → LED cambia ✓ (2026-06-25)
-- [ ] Conseguir fuente 12V y conectar cartucho calefactor al relé
-- [ ] Probar sistema completo con calentador real
-- [ ] Integrar control por Telegram (encender/apagar, cambiar temperatura objetivo)
+- [x] Código base (sensor DS18B20 + relé + histéresis)
+- [x] LCD 16x02 mostrando temperatura y estado
+- [x] Ciclo completo verificado en protoboard (2026-06-25)
+- [x] Control por Telegram (auto / forzar ON / forzar OFF)
+- [ ] Conseguir fuente 12V y conectar el cartucho calefactor real
+- [ ] Probar el sistema completo con el calentador real
 
-## Sistema 2 — Cobertor automático retráctil
+## Sistema 2 — Luces al ritmo de la música
 
-- [ ] Conseguir motores
-- [ ] Definir tipo de motor y mecanismo del cobertor
+- [x] Sensor de sonido leído por el ESP32 (pin GPIO34)
+- [x] Detección de graves/agudos por FFT (arduinoFFT)
+- [x] 4 LEDs con efecto disco según la música
+- [x] Control por Telegram (auto / ON / OFF)
+- [x] Verificado funcionando (archivo "posta" de los compañeros)
+
+## Sistema 3 — Cobertor automático retráctil
+
+- [ ] Conseguir motores (DC con reductora) + LM2596 + fuente 12V
+- [ ] Definir mecanismo de enrollado (tubo + soportes)
 - [ ] Conectar L298N al ESP32 y a los motores
-- [ ] Conectar fin de carrera para detectar posición abierto/cerrado
-- [ ] Programar lógica de apertura y cierre
-- [ ] Integrar control por Telegram (abrir/cerrar)
-
-## Sistema 3 — Luces al ritmo de la música
-
-- [ ] Conectar sensor de sonido al ESP32
-- [ ] Programar detección de picos de sonido
-- [ ] Conectar LEDs de colores
-- [ ] Programar efecto disco (LEDs al ritmo del sonido)
-- [ ] Integrar control por Telegram (encender/apagar)
+- [ ] Conectar fin de carrera (posición abierto/cerrado)
+- [ ] Programar apertura y cierre
+- [ ] Integrar control por Telegram
 
 ## Bot de Telegram
 
-- [ ] Crear bot en Telegram con BotFather y obtener token
-- [ ] Integrar librería UniversalTelegramBot en el ESP32
-- [ ] Programar comandos para los 3 sistemas
-- [ ] Probar control remoto completo
+- [x] Bot creado con BotFather y token funcionando
+- [x] Librerías: UniversalTelegramBot 1.3.0 + ArduinoJson **6.x** (la 7 no compila)
+- [x] Comandos integrados para calentador y luces
+- [ ] Comandos para el cobertor (cuando exista el Sistema 3)
 
 ---
 
 ## Historial de sesiones
 
 ### Sesión 2026-06-25
-- Definición completa del proyecto (3 sistemas + Telegram)
-- Escritura del código base para sensor + LCD + LEDs + relé (`prueba_sensor.ino`)
-- Conexión física del DS18B20, LCD, LEDs y relé en protoboard
-- Sistema de calentador verificado completo: ciclo frío/calor, click del relé, LEDs y LCD funcionando
-- Pines asignados: GPIO4 (sensor), GPIO21/22 (LCD), GPIO26 (relé), GPIO14/27 (LEDs)
-- Pendiente próxima sesión: conectar sensor de sonido y programar luces disco (Sistema 3)
+- Definición del proyecto (3 sistemas + Telegram)
+- Calentador (sensor + LCD + LEDs + relé) armado y verificado en protoboard
+
+### Sesión 2026-07-16
+- Integrados en un solo programa `PiletaInteligente.ino`: calentador + luces disco + Telegram
+- Base: archivo "posta" (luces, ya verificado) + bot de Telegram que ya andaba
+- Agregado control del calentador por Telegram (auto / ON / OFF), con apagado por seguridad si falla el sensor
+- Secretos (WiFi + token) separados en `config.h` (fuera de GitHub)
+- Limpieza: eliminadas las versiones intermedias y duplicadas; `prueba_sensor.ino` reemplazado por el programa unificado
+- Documentación para los compañeros: `README.md` + `COMPONENTES.md`
+- **Pendiente de probar en hardware** por Mariano (compilar con ArduinoJson 6.21.5 y cargar al ESP32)

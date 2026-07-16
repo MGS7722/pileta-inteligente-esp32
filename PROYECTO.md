@@ -63,12 +63,18 @@ Todos los sistemas se controlan desde un chat de Telegram con comandos:
 
 ---
 
-## Pines ESP32 asignados (sistema actual)
+## Pines ESP32 asignados (programa `PiletaInteligente.ino`)
 | Pin GPIO | Función |
 |---|---|
-| GPIO4  | DS18B20 DATA |
+| GPIO4  | DS18B20 DATA (pull-up 4.7kΩ a 3.3V) |
+| GPIO26 | Relé IN (calentador) |
 | GPIO21 | LCD SDA (I2C) |
 | GPIO22 | LCD SCL (I2C) |
-| GPIO26 | Relé IN |
-| GPIO14 | LED verde (calentador ON) |
-| GPIO27 | LED rojo (calentador OFF) |
+| GPIO16 | LED 1 (luces disco) |
+| GPIO17 | LED 2 (luces disco) |
+| GPIO18 | LED 3 (luces disco) |
+| GPIO19 | LED 4 (luces disco) |
+| GPIO34 | Sensor de sonido (analógico, ADC1) |
+
+> El estado del calentador ahora se ve en el LCD y por Telegram, así que se quitaron
+> los LEDs indicadores verde/rojo (GPIO14/27) para liberar pines para las luces disco.
