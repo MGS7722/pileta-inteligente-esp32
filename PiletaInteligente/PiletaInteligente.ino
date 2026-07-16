@@ -8,10 +8,13 @@
 //     1) CALENTADOR   -> Sensor de temperatura DS18B20 + relé.
 //                        Arranca APAGADO; se activa desde Telegram
 //                        (automático con histéresis, o forzado ON).
-//     2) LUCES DISCO  -> Sensor de sonido + 4 LEDs que bailan
-//                        al ritmo de la música (análisis FFT).
+//     2) LUCES DISCO  -> Sensor de sonido + 8 LEDs (4 colores x 2
+//                        lados) que bailan al ritmo de la música.
 //                        Arrancan APAGADAS; se activan desde Telegram.
-//     3) PANTALLA LCD -> Muestra temperatura y estado en vivo.
+//     3) COBERTOR     -> 2 motores por L298N + 2 fines de carrera.
+//                        Abre/cierra desde Telegram; frena solo al
+//                        llegar al tope.
+//     +) PANTALLA LCD -> Muestra temperatura y estado en vivo.
 //
 //   ------------------------------------------------------------
 //   ANTES DE CARGAR:
@@ -20,16 +23,20 @@
 //       (OJO: ArduinoJson tiene que ser la versión 6, NO la 7)
 //   ------------------------------------------------------------
 //
-//   CONEXIONES (pines del ESP32):
+//   CONEXIONES (pines del ESP32) — ver detalle en COMPONENTES.md:
 //     GPIO4   -> DS18B20 (dato)   [resistencia 4.7k a 3.3V]
 //     GPIO26  -> Relé (señal S)   [calentador]
 //     GPIO21  -> LCD SDA (I2C)
 //     GPIO22  -> LCD SCL (I2C)
-//     GPIO16  -> LED 1 (luces disco)
-//     GPIO17  -> LED 2
-//     GPIO18  -> LED 3
-//     GPIO19  -> LED 4
-//     GPIO34  -> Sensor de sonido (salida analógica)
+//     GPIO16  -> LEDs VERDES  (los 2, uno por lado)
+//     GPIO17  -> LEDs ROJOS
+//     GPIO18  -> LEDs AZULES
+//     GPIO19  -> LEDs BLANCOS
+//     GPIO34  -> Sensor de sonido (analógico)
+//     GPIO13,25,27 -> L298N motor A (IN1, IN2, ENA-PWM)
+//     GPIO32,33,14 -> L298N motor B (IN3, IN4, ENB-PWM)
+//     GPIO23  -> Fin de carrera CERRADO (con pull-up interno)
+//     GPIO35  -> Fin de carrera ABIERTO (con resistencia 10k a 3.3V)
 // ============================================================
 
 #include "config.h"
@@ -49,15 +56,28 @@
 //   PINES
 // ============================================================
 
+// --- Calentador (Sistema 1) ---
 #define PIN_DS18B20 4     // Sensor de temperatura del agua
 #define PIN_RELE    26    // Señal del relé que prende el calentador
 
-#define LED_1 16          // Luces disco
-#define LED_2 17
-#define LED_3 18
-#define LED_4 19
+// --- Luces disco (Sistema 2) ---
+// 8 LEDs = 4 colores x 2 lados. Cada pin maneja los 2 LEDs del mismo
+// color (uno de cada lado), cada LED con su resistencia de 220 ohm.
+#define LED_VERDE   16
+#define LED_ROJO    17
+#define LED_AZUL    18
+#define LED_BLANCO  19
+#define MIC_PIN     34    // Sensor de sonido. ADC1 (no usar ADC2: choca con WiFi).
 
-#define MIC_PIN 34        // Sensor de sonido. ADC1 (no usar ADC2: choca con WiFi).
+// --- Cobertor (Sistema 3): L298N + 2 motores + 2 fines de carrera ---
+#define MOTOR_A_IN1 13    // Motor A = lado del rodillo de la lona
+#define MOTOR_A_IN2 25
+#define MOTOR_A_EN  27    // PWM velocidad motor A
+#define MOTOR_B_IN3 32    // Motor B = lado que tira de los cables
+#define MOTOR_B_IN4 33
+#define MOTOR_B_EN  14    // PWM velocidad motor B
+#define FC_CERRADO  23    // Fin de carrera: cobertor cerrado  (pull-up INTERNO)
+#define FC_ABIERTO  35    // Fin de carrera: cobertor abierto  (pull-up EXTERNO 10k, GPIO34-39 no tienen interno)
 
 // ============================================================
 //   AJUSTES DEL CALENTADOR
@@ -77,7 +97,7 @@ const int RELE_OFF = HIGH;
 #define SAMPLES 128                 // Cantidad de muestras (debe ser potencia de 2)
 #define SAMPLING_FREQUENCY 10000    // Frecuencia de muestreo en Hz
 
-// Bandas de frecuencia para distinguir el tipo de música
+// Bandas de frecuencia para clasificar el tipo de música
 const int BANDA_GRAVES_MIN = 60;
 const int BANDA_GRAVES_MAX = 250;
 const int BANDA_AGUDOS_MIN = 2000;
@@ -86,6 +106,13 @@ const int BANDA_AGUDOS_MAX = 6000;
 // Si graves > agudos * UMBRAL => predomina el bajo (Música A)
 const float  UMBRAL_CLASIFICACION = 1.3;
 const double UMBRAL_SILENCIO       = 100.0;  // Energía mínima para considerar que hay sonido
+
+// ============================================================
+//   AJUSTES DEL COBERTOR
+// ============================================================
+
+const int VELOCIDAD_COBERTOR = 180;             // PWM 0-255 (más bajo = más lento y suave)
+const unsigned long TIMEOUT_COBERTOR = 30000;    // Corte de seguridad si no llega al tope (ms)
 
 // ============================================================
 //   TIEMPOS
@@ -134,6 +161,12 @@ double ultimaEnergiaTotal  = 0;
 double ultimoVolumen = 0;
 int    ultimoBrillo  = 0;
 
+// --- Cobertor ---
+enum EstadoCobertor { COB_PARADO, COB_ABRIENDO, COB_CERRANDO };
+EstadoCobertor estadoCobertor = COB_PARADO;
+unsigned long inicioMovimientoCobertor = 0;
+String chatCobertor = "";   // A quién avisarle por Telegram cuando termina el movimiento
+
 // --- Tiempos y conexión ---
 unsigned long ultimoTiempoTemp    = 0;
 unsigned long ultimoCheckTelegram = 0;
@@ -151,11 +184,14 @@ void setup() {
   digitalWrite(PIN_RELE, RELE_OFF);
 
   // Luces (arrancan APAGADAS; se activan desde Telegram)
-  pinMode(LED_1, OUTPUT);
-  pinMode(LED_2, OUTPUT);
-  pinMode(LED_3, OUTPUT);
-  pinMode(LED_4, OUTPUT);
+  pinMode(LED_VERDE,  OUTPUT);
+  pinMode(LED_ROJO,   OUTPUT);
+  pinMode(LED_AZUL,   OUTPUT);
+  pinMode(LED_BLANCO, OUTPUT);
   apagarTodasLasLuces();
+
+  // Cobertor (motores frenados al arrancar)
+  setupCobertor();
 
   // Sensor de temperatura
   sensores.begin();
@@ -180,7 +216,7 @@ void setup() {
   conectarWiFiTelegram();
 
   Serial.println("Sistema listo.");
-  Serial.println("Calentador: OFF | Luces: OFF (ambos se activan desde Telegram).");
+  Serial.println("Calentador: OFF | Luces: OFF | Cobertor: parado (todo se maneja desde Telegram).");
 }
 
 // ============================================================
@@ -188,19 +224,21 @@ void setup() {
 // ============================================================
 
 void loop() {
-  // 1) Sonido: se muestrea siempre para que las luces y /audio
-  //    tengan datos actualizados.
+  // 1) Sonido y luces → en cada vuelta.
   muestrearAudio();
   clasificarMusica();
   actualizarLucesSegunModo();
 
-  // 2) Temperatura + LCD, cada INTERVALO_TEMP.
+  // 2) Cobertor → máquina de estados no bloqueante (frena al llegar al tope).
+  actualizarCobertor();
+
+  // 3) Temperatura + LCD → cada INTERVALO_TEMP.
   if (millis() - ultimoTiempoTemp >= INTERVALO_TEMP) {
     ultimoTiempoTemp = millis();
     actualizarTemperatura();
   }
 
-  // 3) Telegram, cada INTERVALO_TELEGRAM.
+  // 4) Telegram → cada INTERVALO_TELEGRAM.
   procesarTelegram();
 }
 
@@ -268,7 +306,9 @@ void actualizarTemperatura() {
   Serial.print(" (");
   Serial.print(modoCalentadorTexto());
   Serial.print(") | Luces: ");
-  Serial.println(modoLucesTexto());
+  Serial.print(modoLucesTexto());
+  Serial.print(" | Cobertor: ");
+  Serial.println(estadoCobertorTexto());
 }
 
 void prenderCalentador() {
@@ -361,19 +401,18 @@ void actualizarLucesSonido() {
   ultimoVolumen = volumen;
   ultimoBrillo  = brillo;
 
+  int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
+
   switch (tipoMusicaActual) {
 
     case MUSICA_A: {
-      // Graves: las 4 luces laten juntas.
-      analogWrite(LED_1, brillo);
-      analogWrite(LED_2, brillo);
-      analogWrite(LED_3, brillo);
-      analogWrite(LED_4, brillo);
+      // Graves: los 4 colores laten juntos.
+      for (int i = 0; i < 4; i++) analogWrite(colores[i], brillo);
       break;
     }
 
     case MUSICA_B: {
-      // Agudos/voz: barrido secuencial de una luz a la vez.
+      // Agudos/voz: barrido secuencial de un color a la vez.
       static int posicion = 0;
       static unsigned long ultimoPaso = 0;
       unsigned long ahora = millis();
@@ -383,9 +422,8 @@ void actualizarLucesSonido() {
         posicion = (posicion + 1) % 4;
       }
 
-      int pines[4] = {LED_1, LED_2, LED_3, LED_4};
       for (int i = 0; i < 4; i++) {
-        analogWrite(pines[i], (i == posicion) ? brillo : 0);
+        analogWrite(colores[i], (i == posicion) ? brillo : 0);
       }
       break;
     }
@@ -400,17 +438,131 @@ void actualizarLucesSonido() {
 }
 
 void prenderTodasLasLuces() {
-  analogWrite(LED_1, 255);
-  analogWrite(LED_2, 255);
-  analogWrite(LED_3, 255);
-  analogWrite(LED_4, 255);
+  analogWrite(LED_VERDE,  255);
+  analogWrite(LED_ROJO,   255);
+  analogWrite(LED_AZUL,   255);
+  analogWrite(LED_BLANCO, 255);
 }
 
 void apagarTodasLasLuces() {
-  analogWrite(LED_1, 0);
-  analogWrite(LED_2, 0);
-  analogWrite(LED_3, 0);
-  analogWrite(LED_4, 0);
+  analogWrite(LED_VERDE,  0);
+  analogWrite(LED_ROJO,   0);
+  analogWrite(LED_AZUL,   0);
+  analogWrite(LED_BLANCO, 0);
+}
+
+// ============================================================
+//   COBERTOR
+// ============================================================
+
+void setupCobertor() {
+  pinMode(MOTOR_A_IN1, OUTPUT);
+  pinMode(MOTOR_A_IN2, OUTPUT);
+  pinMode(MOTOR_A_EN,  OUTPUT);
+  pinMode(MOTOR_B_IN3, OUTPUT);
+  pinMode(MOTOR_B_IN4, OUTPUT);
+  pinMode(MOTOR_B_EN,  OUTPUT);
+
+  pinMode(FC_CERRADO, INPUT_PULLUP);   // pull-up interno
+  pinMode(FC_ABIERTO, INPUT);          // GPIO35 no tiene pull-up interno -> resistencia 10k externa
+
+  cobertorFrenar();
+}
+
+// Un fin de carrera está "tocado" cuando el pin queda en LOW.
+bool finDeCarreraTocado(int pin) {
+  return digitalRead(pin) == LOW;
+}
+
+// --- Control de cada motor (el L298N usa IN para dirección y EN para velocidad) ---
+
+// Motor A libre: gira arrastrado por la lona (no frena).
+void motorA_libre() {
+  digitalWrite(MOTOR_A_IN1, LOW);
+  digitalWrite(MOTOR_A_IN2, LOW);
+  analogWrite(MOTOR_A_EN, 0);
+}
+
+// Motor A enrolla la lona (movimiento de ABRIR).
+void motorA_enrollar() {
+  digitalWrite(MOTOR_A_IN1, HIGH);
+  digitalWrite(MOTOR_A_IN2, LOW);
+  analogWrite(MOTOR_A_EN, VELOCIDAD_COBERTOR);
+}
+
+// Motor B libre: suelta cable, gira arrastrado.
+void motorB_libre() {
+  digitalWrite(MOTOR_B_IN3, LOW);
+  digitalWrite(MOTOR_B_IN4, LOW);
+  analogWrite(MOTOR_B_EN, 0);
+}
+
+// Motor B tira de los cables (movimiento de CERRAR).
+void motorB_tirar() {
+  digitalWrite(MOTOR_B_IN3, HIGH);
+  digitalWrite(MOTOR_B_IN4, LOW);
+  analogWrite(MOTOR_B_EN, VELOCIDAD_COBERTOR);
+}
+
+void cobertorFrenar() {
+  motorA_libre();
+  motorB_libre();
+}
+
+// Empieza a abrir: el rodillo enrolla la lona, el otro lado suelta cable.
+void cobertorAbrir() {
+  estadoCobertor = COB_ABRIENDO;
+  inicioMovimientoCobertor = millis();
+  motorB_libre();
+  motorA_enrollar();
+  Serial.println(">>> Cobertor: ABRIENDO");
+}
+
+// Empieza a cerrar: los cables tiran la lona, el rodillo la suelta.
+void cobertorCerrar() {
+  estadoCobertor = COB_CERRANDO;
+  inicioMovimientoCobertor = millis();
+  motorA_libre();
+  motorB_tirar();
+  Serial.println(">>> Cobertor: CERRANDO");
+}
+
+void cobertorParar() {
+  estadoCobertor = COB_PARADO;
+  cobertorFrenar();
+  Serial.println(">>> Cobertor: PARADO");
+}
+
+// Máquina de estados: se llama en cada loop. Frena al llegar al tope
+// o si pasa demasiado tiempo (seguridad).
+void actualizarCobertor() {
+  if (estadoCobertor == COB_PARADO) return;
+
+  if (estadoCobertor == COB_ABRIENDO && finDeCarreraTocado(FC_ABIERTO)) {
+    cobertorParar();
+    avisarCobertor("Cobertor ABIERTO ✅");
+    return;
+  }
+
+  if (estadoCobertor == COB_CERRANDO && finDeCarreraTocado(FC_CERRADO)) {
+    cobertorParar();
+    avisarCobertor("Cobertor CERRADO ✅");
+    return;
+  }
+
+  // Corte de seguridad: si tardó demasiado, algo se trabó.
+  if (millis() - inicioMovimientoCobertor > TIMEOUT_COBERTOR) {
+    cobertorParar();
+    avisarCobertor("⚠️ Cobertor detenido por seguridad (tardó demasiado). Revisá que no esté trabado.");
+  }
+}
+
+// Avisa por Telegram a quien pidió el movimiento (si hay alguien y hay WiFi).
+void avisarCobertor(String msg) {
+  if (chatCobertor.length() > 0 && WiFi.status() == WL_CONNECTED) {
+    bot.sendMessage(chatCobertor, msg, "");
+  }
+  chatCobertor = "";
 }
 
 // ============================================================
@@ -522,6 +674,31 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     bot.sendMessage(chat_id, "Calentador OFF: forzado apagado.", "");
   }
 
+  // --- Cobertor ---
+  else if (text == "/cobertor_abrir") {
+    if (finDeCarreraTocado(FC_ABIERTO)) {
+      bot.sendMessage(chat_id, "El cobertor ya está abierto.", "");
+    } else {
+      chatCobertor = chat_id;
+      cobertorAbrir();
+      bot.sendMessage(chat_id, "Abriendo el cobertor... te aviso cuando termine.", "");
+    }
+  }
+  else if (text == "/cobertor_cerrar") {
+    if (finDeCarreraTocado(FC_CERRADO)) {
+      bot.sendMessage(chat_id, "El cobertor ya está cerrado.", "");
+    } else {
+      chatCobertor = chat_id;
+      cobertorCerrar();
+      bot.sendMessage(chat_id, "Cerrando el cobertor... te aviso cuando termine.", "");
+    }
+  }
+  else if (text == "/cobertor_parar") {
+    cobertorParar();
+    chatCobertor = "";
+    bot.sendMessage(chat_id, "Cobertor detenido.", "");
+  }
+
   // --- Consultas ---
   else if (text == "/status") {
     bot.sendMessage(chat_id, armarStatus(), "");
@@ -560,6 +737,10 @@ String armarAyuda(String from_name) {
   s += "/calentador_auto - automático por temperatura\n";
   s += "/calentador_on - forzar encendido\n";
   s += "/calentador_off - forzar apagado\n\n";
+  s += "COBERTOR:\n";
+  s += "/cobertor_abrir - destapar la pileta\n";
+  s += "/cobertor_cerrar - tapar la pileta\n";
+  s += "/cobertor_parar - frenar el cobertor\n\n";
   s += "INFORMACIÓN:\n";
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
@@ -582,6 +763,7 @@ String armarStatus() {
 
   s += "Luces: " + modoLucesTexto() + "\n";
   s += "Música: " + tipoMusicaTexto() + "\n";
+  s += "Cobertor: " + estadoCobertorTexto() + "\n";
   s += "WiFi: ";
   s += (WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado");
   return s;
@@ -639,4 +821,12 @@ String tipoMusicaTexto() {
     case SIN_SONIDO: return "sin sonido";
     default:         return "?";
   }
+}
+
+String estadoCobertorTexto() {
+  if (estadoCobertor == COB_ABRIENDO) return "abriendo...";
+  if (estadoCobertor == COB_CERRANDO) return "cerrando...";
+  if (finDeCarreraTocado(FC_CERRADO)) return "cerrado";
+  if (finDeCarreraTocado(FC_ABIERTO)) return "abierto";
+  return "parado (posición intermedia)";
 }

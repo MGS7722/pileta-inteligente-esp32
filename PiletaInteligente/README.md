@@ -4,8 +4,9 @@ Un solo programa para el ESP32 que controla los tres sistemas de la pileta y se 
 desde un bot de Telegram:
 
 1. **Calentador** — sensor de temperatura DS18B20 + relé. Arranca **apagado**; se activa desde Telegram (automático o forzado ON).
-2. **Luces disco** — sensor de sonido + 4 LEDs que bailan al ritmo de la música. Arrancan **apagadas**; se activan desde Telegram.
-3. **Pantalla LCD** — muestra la temperatura y el estado en vivo.
+2. **Luces disco** — sensor de sonido + 8 LEDs (4 colores × 2 lados) que bailan al ritmo de la música. Arrancan **apagadas**; se activan desde Telegram.
+3. **Cobertor** — 2 motores por L298N + fines de carrera. Abre/cierra desde Telegram y frena solo al llegar al tope.
+4. **Pantalla LCD** — muestra la temperatura y el estado en vivo.
 
 ---
 
@@ -50,17 +51,8 @@ No hace falta tocar nada más del programa.
 
 ### 3) Conectar los componentes
 
-| Pin del ESP32 | Se conecta a |
-|---|---|
-| GPIO4  | DS18B20 (dato) — con resistencia 4.7kΩ a 3.3V |
-| GPIO26 | Relé (señal S) → calentador |
-| GPIO21 | LCD **SDA** (I2C) |
-| GPIO22 | LCD **SCL** (I2C) |
-| GPIO16 | LED 1 (luces disco) |
-| GPIO17 | LED 2 |
-| GPIO18 | LED 3 |
-| GPIO19 | LED 4 |
-| GPIO34 | Sensor de sonido (salida analógica) |
+El detalle completo de TODAS las conexiones (los 3 sistemas, la alimentación y los
+cuidados) está en **`CONEXIONES.md`** — ahí tenés el croquis pin por pin.
 
 ### 4) Cargar al ESP32
 
@@ -132,6 +124,11 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/calentador_on` — forzar encendido
 - `/calentador_off` — forzar apagado
 
+**Cobertor**
+- `/cobertor_abrir` — destapar la pileta
+- `/cobertor_cerrar` — tapar la pileta
+- `/cobertor_parar` — frenar el cobertor
+
 **Información**
 - `/status` — estado general
 - `/temp` — temperatura y calentador
@@ -156,5 +153,6 @@ Dos formas de resolverlo:
 
 ## 🚧 Pendiente
 
-- **Sistema 3 — Cobertor motorizado**: todavía no está en este programa (faltan los
-  motores). Se suma más adelante con el driver L298N.
+- **Armar el cobertor en el hardware**: el código ya está listo (comandos y lógica de
+  "un motor tira / el otro suelto" + corte por fin de carrera). Falta montar el mecanismo
+  (motores + rodillo + cables + fines de carrera) y probarlo.
