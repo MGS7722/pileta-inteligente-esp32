@@ -51,8 +51,10 @@ No hace falta tocar nada más del programa.
 
 ### 3) Conectar los componentes
 
-El detalle completo de TODAS las conexiones (los 3 sistemas, la alimentación y los
-cuidados) está en **`CONEXIONES.md`** — ahí tenés el croquis pin por pin.
+Dos guías, elegí la que prefieras:
+- **`CABLEADO-PASO-A-PASO.md`** → cable por cable, numerado, "para tontos". Ideal para
+  armar en la protoboard sin equivocarse.
+- **`CONEXIONES.md`** → croquis por sistema + alimentación (visión más de conjunto).
 
 ### 4) Cargar al ESP32
 
