@@ -4,7 +4,7 @@ Un solo programa para el ESP32 que controla los tres sistemas de la pileta y se 
 desde un bot de Telegram:
 
 1. **Calentador** — sensor de temperatura DS18B20 + relé (automático o forzado ON/OFF).
-2. **Luces disco** — sensor de sonido + 4 LEDs que bailan al ritmo de la música.
+2. **Luces disco** — sensor de sonido + 4 LEDs que bailan al ritmo de la música. Arrancan **apagadas**; se activan desde Telegram.
 3. **Pantalla LCD** — muestra la temperatura y el estado en vivo.
 
 ---
@@ -65,8 +65,8 @@ Abrí el **Monitor Serie** a **115200 baudios** para ver la IP y los mensajes.
 
 Escribile `/start` al bot para ver el menú. Comandos:
 
-**Luces**
-- `/luces_auto` — bailan con la música (modo por defecto)
+**Luces** (arrancan apagadas)
+- `/luces_auto` — bailan con la música (si no hay música, quedan apagadas)
 - `/luces_on` — todas prendidas fijas
 - `/luces_off` — todas apagadas
 

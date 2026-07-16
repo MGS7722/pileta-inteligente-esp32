@@ -10,7 +10,7 @@
 //                        ON/OFF desde Telegram.
 //     2) LUCES DISCO  -> Sensor de sonido + 4 LEDs que bailan
 //                        al ritmo de la música (análisis FFT).
-//                        Automático, o forzado ON/OFF.
+//                        Arrancan APAGADAS; se activan desde Telegram.
 //     3) PANTALLA LCD -> Muestra temperatura y estado en vivo.
 //
 //   ------------------------------------------------------------
@@ -126,7 +126,7 @@ enum TipoMusica { MUSICA_A, MUSICA_B, SIN_SONIDO };
 TipoMusica tipoMusicaActual = SIN_SONIDO;
 
 enum ModoLuces { LUCES_AUTO, LUCES_ON, LUCES_OFF };
-ModoLuces modoLuces = LUCES_AUTO;   // Por defecto: reactivas al sonido
+ModoLuces modoLuces = LUCES_OFF;   // Por defecto: apagadas (se activan desde Telegram)
 
 double ultimaEnergiaGraves = 0;
 double ultimaEnergiaAgudos = 0;
@@ -150,12 +150,12 @@ void setup() {
   pinMode(PIN_RELE, OUTPUT);
   digitalWrite(PIN_RELE, RELE_OFF);
 
-  // Luces
+  // Luces (arrancan APAGADAS; se activan desde Telegram)
   pinMode(LED_1, OUTPUT);
   pinMode(LED_2, OUTPUT);
   pinMode(LED_3, OUTPUT);
   pinMode(LED_4, OUTPUT);
-  prenderTodasLasLuces();   // Arranque visible; después manda el modo AUTO
+  apagarTodasLasLuces();
 
   // Sensor de temperatura
   sensores.begin();
@@ -180,7 +180,7 @@ void setup() {
   conectarWiFiTelegram();
 
   Serial.println("Sistema listo.");
-  Serial.println("Calentador: AUTO | Luces: AUTO (reactivas al sonido).");
+  Serial.println("Calentador: AUTO | Luces: OFF (se activan desde Telegram).");
 }
 
 // ============================================================
@@ -392,8 +392,8 @@ void actualizarLucesSonido() {
 
     case SIN_SONIDO:
     default: {
-      // Sin música: luces fijas encendidas.
-      prenderTodasLasLuces();
+      // Sin música: se apagan y esperan a que vuelva a sonar algo.
+      apagarTodasLasLuces();
       break;
     }
   }
@@ -495,7 +495,7 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   // --- Luces ---
   else if (text == "/luces_auto" || text == "/auto") {
     modoLuces = LUCES_AUTO;
-    bot.sendMessage(chat_id, "Luces en AUTO: bailan con la música.", "");
+    bot.sendMessage(chat_id, "Luces en AUTO: bailan con la música (si no hay música, quedan apagadas).", "");
   }
   else if (text == "/luces_on") {
     modoLuces = LUCES_ON;
