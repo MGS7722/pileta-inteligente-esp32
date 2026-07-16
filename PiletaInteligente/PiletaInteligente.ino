@@ -36,7 +36,7 @@
 //     GPIO13,25,27 -> L298N motor A (IN1, IN2, ENA-PWM)
 //     GPIO32,33,14 -> L298N motor B (IN3, IN4, ENB-PWM)
 //     GPIO23  -> Fin de carrera CERRADO (con pull-up interno)
-//     GPIO35  -> Fin de carrera ABIERTO (con resistencia 10k a 3.3V)
+//     GPIO5   -> Fin de carrera ABIERTO (con pull-up interno)
 // ============================================================
 
 #include "config.h"
@@ -77,7 +77,7 @@
 #define MOTOR_B_IN4 33
 #define MOTOR_B_EN  14    // PWM velocidad motor B
 #define FC_CERRADO  23    // Fin de carrera: cobertor cerrado  (pull-up INTERNO)
-#define FC_ABIERTO  35    // Fin de carrera: cobertor abierto  (pull-up EXTERNO 10k, GPIO34-39 no tienen interno)
+#define FC_ABIERTO  5     // Fin de carrera: cobertor abierto  (pull-up INTERNO)
 
 // ============================================================
 //   AJUSTES DEL CALENTADOR
@@ -464,7 +464,7 @@ void setupCobertor() {
   pinMode(MOTOR_B_EN,  OUTPUT);
 
   pinMode(FC_CERRADO, INPUT_PULLUP);   // pull-up interno
-  pinMode(FC_ABIERTO, INPUT);          // GPIO35 no tiene pull-up interno -> resistencia 10k externa
+  pinMode(FC_ABIERTO, INPUT_PULLUP);   // pull-up interno (no hace falta resistencia externa)
 
   cobertorFrenar();
 }

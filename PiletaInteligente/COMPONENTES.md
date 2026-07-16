@@ -28,9 +28,7 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | Componente | Sistema | Para qué |
 |---|---|---|
 | Resistencia 4.7kΩ | S1 | Pull-up del sensor DS18B20 |
-| Fuente de alimentación 12V | S1 + S3 | Alimenta el calentador y (vía LM2596) los motores |
-| Módulo reductor LM2596 | S3 | Bajar los 12V a ~7-8V para los motores de 6V |
-| Resistencia 10kΩ | S3 | Pull-up del fin de carrera "abierto" (GPIO35 no tiene interno) |
+| (Opcional) Módulo reductor LM2596 | S3 | Solo si la fuente NO es regulable. Con la fuente del lab regulada a ~8V no hace falta |
 | (Opcional) Buje reductor 3mm→5mm | S3 | Para centrar bien el acople de 5mm en el eje de 3mm del motor (si bambolea o patina) |
 
 ---
@@ -65,6 +63,6 @@ en **`CONEXIONES.md`**:
 | GPIO33 | L298N IN4 (motor B) |
 | GPIO14 | L298N ENB — PWM motor B |
 | GPIO23 | Fin de carrera "cerrado" (pull-up interno) |
-| GPIO35 | Fin de carrera "abierto" (resistencia 10kΩ externa a 3.3V) |
+| GPIO5  | Fin de carrera "abierto" (pull-up interno) |
 
-Quedan libres de sobra: GPIO5, GPIO36, GPIO39 y más.
+Quedan libres de sobra: GPIO36, GPIO39 y más.

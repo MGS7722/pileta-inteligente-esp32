@@ -4,7 +4,7 @@ Croquis de cómo va conectado TODO al ESP32, sistema por sistema.
 Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligente.ino`.
 
 > ⚠️ **Reglas de oro del cableado (leer antes de conectar):**
-> 1. **Todos los GND van juntos** (ESP32, L298N, relé, fuente 12V, LM2596, sensores). Sin GND común, nada funciona bien.
+> 1. **Todos los GND van juntos** (ESP32, L298N, relé, fuente, sensores). Sin GND común, nada funciona bien.
 > 2. **Nunca metas 5V o 12V a un pin GPIO** del ESP32: los pines son de **3.3V**. Se queman con más.
 > 3. El **sensor de sonido se alimenta a 3.3V** (así su salida nunca pasa de 3.3V y no daña el GPIO34).
 
@@ -30,7 +30,7 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 | GPIO33 | Cobertor | L298N — IN4 (motor B) |
 | GPIO14 | Cobertor | L298N — ENB (PWM motor B) |
 | GPIO23 | Cobertor | Fin de carrera CERRADO (otro extremo a GND) |
-| GPIO35 | Cobertor | Fin de carrera ABIERTO (otro extremo a GND + resistencia 10kΩ a 3.3V) |
+| GPIO5  | Cobertor | Fin de carrera ABIERTO (otro extremo a GND) |
 | 3.3V | — | DS18B20, sensor de sonido, pull-ups |
 | 5V (Vin) | — | LCD, módulo relé (lado lógico) |
 | GND | — | **común a todo** |
@@ -87,7 +87,7 @@ LEDs (por cada color, 2 LEDs: uno de cada lado de la pileta)
 
 ```
 L298N (control)                 L298N (potencia)
-   IN1 ──── GPIO13                +12V ──── LM2596 OUT (~8V)
+   IN1 ──── GPIO13                +12V ──── fuente regulada a ~8V (o LM2596 OUT)
    IN2 ──── GPIO25                GND  ──── GND común
    ENA ──── GPIO27 (PWM)          +5V  ──── (jumper puesto: salida 5V lógica)
    IN3 ──── GPIO32
@@ -97,15 +97,22 @@ L298N (control)                 L298N (potencia)
    ⚠️ Quitar los jumpers de ENA y ENB (usamos PWM por pin).
 
 Alimentación de los motores (son de 6V)
-   Fuente12V(+) ── LM2596 IN+        LM2596 OUT+ ── L298N +12V
-   Fuente12V(−) ── LM2596 IN− (GND)  LM2596 OUT− ── GND
-   → Ajustar el LM2596 a ~7,5–8V con el tornillito ANTES de conectar los motores.
+   ► OPCIÓN A (fuente de laboratorio REGULABLE — lo más simple):
+     Regulá la fuente a ~7,5–8V y conectala directo al L298N (+12V y GND).
+     El L298N pierde ~2V y deja ~6V en los motores. NO hace falta el LM2596.
+     (7,5–8V porque el driver "se come" ~2V; si tu fuente puede dar más
+      corriente, mejor: los 2 motores juntos piden < 1,5A.)
+
+   ► OPCIÓN B (fuente fija de 12V + módulo LM2596):
+     Fuente12V(+) ── LM2596 IN+        LM2596 OUT+ ── L298N +12V
+     Fuente12V(−) ── LM2596 IN− (GND)  LM2596 OUT− ── GND
+     → Ajustar el LM2596 a ~7,5–8V con el tornillito ANTES de conectar los motores.
 
 Fines de carrera (interruptores de tope)
    FC CERRADO:  GPIO23 ──── un borne ; otro borne ──── GND
-   FC ABIERTO:  GPIO35 ──── un borne ; otro borne ──── GND
-                + resistencia 10kΩ entre GPIO35 y 3.3V
-                (GPIO35 no tiene resistencia interna, por eso la externa)
+   FC ABIERTO:  GPIO5  ──── un borne ; otro borne ──── GND
+                (ambos usan la resistencia pull-up INTERNA del ESP32:
+                 no hace falta ninguna resistencia externa)
 ```
 
 - **Motor A** = lado del rodillo donde se enrolla la lona. **Motor B** = lado que tira de los cables.
@@ -119,7 +126,7 @@ Fines de carrera (interruptores de tope)
 ```
         ┌──────────── Fuente 12V ────────────┐
         │                                     │
-   Relé → cartucho calefactor            LM2596 (baja a ~8V)
+   Relé → cartucho calefactor       fuente regulada a ~8V (o LM2596)
                                               │
                                          L298N (motores 6V)
 
@@ -127,5 +134,5 @@ Fines de carrera (interruptores de tope)
             o por 5V. GND del ESP32 SIEMPRE unido al GND de todo lo demás.
 ```
 
-- **GND común** entre fuente 12V, LM2596, L298N, relé, ESP32 y sensores. Es lo más importante.
+- **GND común** entre la fuente, el L298N, el relé, el ESP32 y los sensores. Es lo más importante.
 - El ESP32 se puede dejar alimentado por el cable USB de la notebook mientras prueban.

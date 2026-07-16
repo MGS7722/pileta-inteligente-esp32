@@ -26,7 +26,7 @@
 - [x] Programada la apertura/cierre: lógica "un motor tira / el otro suelto", PWM y corte por fin de carrera
 - [x] Integrado a Telegram: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar (+ aviso al terminar)
 - [x] Pines asignados y documentados en CONEXIONES.md
-- [ ] Conseguir LM2596 + resistencia 10kΩ (pull-up del FC abierto)
+- [x] Alimentación resuelta: fuente regulable del laboratorio a ~8V (sin LM2596 ni resistencias extra)
 - [ ] Montar el mecanismo físico y conectar L298N + motores + fines de carrera
 - [ ] Probar en hardware (calibrar velocidad y direcciones de giro)
 
