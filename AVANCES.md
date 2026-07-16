@@ -32,10 +32,10 @@
 
 ## Bot de Telegram
 
-- [x] Bot creado con BotFather y token funcionando
-- [x] Librerías: UniversalTelegramBot 1.3.0 + ArduinoJson **6.x** (la 7 no compila)
-- [x] Comandos integrados para calentador y luces
-- [ ] Comandos para el cobertor (cuando exista el Sistema 3)
+- [x] Bot creado con BotFather y token funcionando (@ControlESP32Pileta_bot)
+- [x] Librerías: UniversalTelegramBot 1.3.0 + ArduinoJson **6.21.5** (la 7 no compila) + core ESP32 3.3.10
+- [x] Comandos integrados para calentador, luces y cobertor
+- [x] Compila OK en la máquina de Mariano (solo warnings de librerías, inofensivos)
 
 ---
 
@@ -46,10 +46,17 @@
 - Calentador (sensor + LCD + LEDs + relé) armado y verificado en protoboard
 
 ### Sesión 2026-07-16
-- Integrados en un solo programa `PiletaInteligente.ino`: calentador + luces disco + Telegram
+- Integrados en un solo programa `PiletaInteligente.ino`: calentador + luces disco + cobertor + Telegram
 - Base: archivo "posta" (luces, ya verificado) + bot de Telegram que ya andaba
-- Agregado control del calentador por Telegram (auto / ON / OFF), con apagado por seguridad si falla el sensor
-- Secretos (WiFi + token) separados en `config.h` (fuera de GitHub)
-- Limpieza: eliminadas las versiones intermedias y duplicadas; `prueba_sensor.ino` reemplazado por el programa unificado
-- Documentación para los compañeros: `README.md` + `COMPONENTES.md`
-- **Pendiente de probar en hardware** por Mariano (compilar con ArduinoJson 6.21.5 y cargar al ESP32)
+- Calentador y luces por Telegram (auto / ON / OFF); ambos arrancan APAGADOS
+- Luces ampliadas a 8 (4 colores × 2 lados, espejadas en 4 pines)
+- Sistema 3 (cobertor) programado e integrado: 2 motores por L298N, lógica "un motor tira / el
+  otro suelto", PWM, corte por fin de carrera, timeout de seguridad y aviso por Telegram
+- Alimentación resuelta con la fuente de laboratorio doble regulable (12V calentador / ~8V motores)
+- Secretos (WiFi + token) separados en `config.h` (fuera de GitHub, en `.gitignore`)
+- Limpieza: eliminadas las versiones intermedias y duplicadas; `prueba_sensor.ino` reemplazado
+- Documentación completa para los compañeros: `README.md`, `CABLEADO-PASO-A-PASO.md`,
+  `CONEXIONES.md`, `COMPONENTES.md`
+- Todo subido a GitHub y a la carpeta del Drive "Tecnicas Digitales"
+- **Pendiente de probar en hardware** por Mariano (montar el cobertor, cargar el sketch y probar
+  los 3 sistemas + comandos de Telegram; calibrar giro y velocidad de los motores)
