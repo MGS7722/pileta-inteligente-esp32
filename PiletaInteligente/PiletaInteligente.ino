@@ -106,8 +106,18 @@ const int BANDA_AGUDOS_MIN = 2000;
 const int BANDA_AGUDOS_MAX = 6000;
 
 // Si graves > agudos * UMBRAL => predomina el bajo (Música A)
-const float  UMBRAL_CLASIFICACION = 1.3;
-const double UMBRAL_SILENCIO       = 100.0;  // Energía mínima para considerar que hay sonido
+const float UMBRAL_CLASIFICACION = 1.3;
+
+// --- Sensibilidad del micrófono (CALIBRADO con mediciones reales del /diag) ---
+// Se mide el "pico a pico" de la señal: la diferencia entre el valor más alto y
+// el más bajo del sonido. Valores medidos en este equipo:
+//   ~17  -> sala en silencio / ruido ambiente
+//   ~26  -> alguien hablando cerca
+//   ~177 -> grito fuerte pegado al sensor
+// Si las luces reaccionan poco, BAJAR SONIDO_MAXIMO (ej. 120).
+// Si reaccionan al mínimo ruido, SUBIR RUIDO_DE_FONDO (ej. 40).
+const int RUIDO_DE_FONDO = 30;    // Por debajo de esto se considera silencio
+const int SONIDO_MAXIMO  = 150;   // A este nivel el efecto llega al máximo
 
 // Efecto de las luces: están PRENDIDAS y la música las va APAGANDO al ritmo.
 // BRILLO_MINIMO = qué tan oscuras pueden llegar a ponerse con la música.
@@ -168,6 +178,7 @@ double ultimaEnergiaAgudos = 0;
 double ultimaEnergiaTotal  = 0;
 double ultimoVolumen = 0;
 int    ultimoBrillo  = 0;
+int    ultimoPicoAPico = 0;   // Volumen real medido (max - min de las muestras)
 
 // --- Cobertor ---
 enum EstadoCobertor { COB_PARADO, COB_ABRIENDO, COB_CERRANDO };
@@ -335,17 +346,41 @@ void apagarCalentador() {
 //   SONIDO + LUCES
 // ============================================================
 
-// Toma SAMPLES muestras del micrófono a SAMPLING_FREQUENCY Hz y calcula la FFT.
+// Toma SAMPLES muestras del micrófono a SAMPLING_FREQUENCY Hz.
+// Calcula el pico a pico (cuánto sonido hay) y prepara la FFT (qué frecuencias hay).
 void muestrearAudio() {
   unsigned long periodo = 1000000UL / SAMPLING_FREQUENCY;  // microsegundos entre muestras
 
+  int  minimo = 4095;
+  int  maximo = 0;
+  long suma   = 0;
+
   for (int i = 0; i < SAMPLES; i++) {
     unsigned long tiempoMicros = micros();
-    vReal[i] = analogRead(MIC_PIN);
+
+    int lectura = analogRead(MIC_PIN);
+    vReal[i] = lectura;
     vImag[i] = 0;
+
+    if (lectura < minimo) minimo = lectura;
+    if (lectura > maximo) maximo = lectura;
+    suma += lectura;
+
     while (micros() - tiempoMicros < periodo) {
       // espera para mantener constante la frecuencia de muestreo
     }
+  }
+
+  // Cuánto sonido hay: la diferencia entre el pico más alto y el más bajo.
+  // Es la medida más directa y sensible del volumen, y no le afecta el nivel
+  // de reposo del micrófono (se cancela solo al restar).
+  ultimoPicoAPico = maximo - minimo;
+
+  // Quitar el nivel de reposo (DC) antes de la FFT. Sin esto, el valor constante
+  // del micrófono (~250) contamina los primeros bins y falsea los graves.
+  double nivelDeReposo = (double)suma / SAMPLES;
+  for (int i = 0; i < SAMPLES; i++) {
+    vReal[i] -= nivelDeReposo;
   }
 
   FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
@@ -373,7 +408,9 @@ void clasificarMusica() {
   ultimaEnergiaAgudos = energiaAgudos;
   ultimaEnergiaTotal  = energiaGraves + energiaAgudos;
 
-  if (ultimaEnergiaTotal < UMBRAL_SILENCIO) {
+  // Hay silencio o no según el VOLUMEN real (pico a pico), no según la energía
+  // de dos bandas sueltas del espectro.
+  if (ultimoPicoAPico < RUIDO_DE_FONDO) {
     tipoMusicaActual = SIN_SONIDO;
   } else if (energiaGraves > energiaAgudos * UMBRAL_CLASIFICACION) {
     tipoMusicaActual = MUSICA_A;   // Predominan los graves (reggaetón, electrónica)
@@ -397,20 +434,21 @@ void actualizarLucesSegunModo() {
 
 // Modo AUTO: patrón de luces según el tipo de música detectado.
 void actualizarLucesSonido() {
-  // Volumen general (promedio del espectro), usado para la intensidad.
-  double volumen = 0;
-  for (int i = 1; i < (SAMPLES / 2); i++) {
-    volumen += vReal[i];
-  }
-  volumen /= (SAMPLES / 2);
+  // Cuánto sonido hay, en escala 0-255, usando el pico a pico medido y los
+  // umbrales calibrados para este micrófono.
+  int intensidadSonido = constrain(
+      map(ultimoPicoAPico, RUIDO_DE_FONDO, SONIDO_MAXIMO, 0, 255), 0, 255);
 
-  int intensidadSonido = constrain(map((long)volumen, 0, 500, 0, 255), 0, 255);
+  // Suavizado: promedia con el valor anterior para que las luces no tiemblen
+  // de forma errática con cada pico suelto.
+  static int intensidadSuavizada = 0;
+  intensidadSuavizada = (intensidadSuavizada + intensidadSonido * 2) / 3;
 
   // Efecto en negativo: las luces arrancan prendidas (255) y cuanto MÁS fuerte
   // suena la música, MÁS se apagan.
-  int brillo = constrain(255 - intensidadSonido, BRILLO_MINIMO, 255);
+  int brillo = constrain(255 - intensidadSuavizada, BRILLO_MINIMO, 255);
 
-  ultimoVolumen = volumen;
+  ultimoVolumen = ultimoPicoAPico;
   ultimoBrillo  = brillo;
 
   int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
@@ -844,11 +882,12 @@ String armarDiagnosticoMicrofono() {
 String armarAudio() {
   String s = "AUDIO\n";
   s += "Música: " + tipoMusicaTexto() + "\n";
+  s += "VOLUMEN (pico a pico): " + String(ultimoPicoAPico) + "\n";
+  s += "  (silencio<" + String(RUIDO_DE_FONDO);
+  s += " / maximo=" + String(SONIDO_MAXIMO) + ")\n";
+  s += "Brillo luces: " + String(ultimoBrillo) + "/255\n\n";
   s += "Graves: " + String(ultimaEnergiaGraves, 1) + "\n";
   s += "Agudos: " + String(ultimaEnergiaAgudos, 1) + "\n";
-  s += "Total: " + String(ultimaEnergiaTotal, 1) + "\n";
-  s += "Volumen: " + String(ultimoVolumen, 1) + "\n";
-  s += "Brillo: " + String(ultimoBrillo) + "/255\n";
   s += "Modo luces: " + modoLucesTexto();
   return s;
 }
