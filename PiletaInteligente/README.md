@@ -4,7 +4,7 @@ Un solo programa para el ESP32 que controla los tres sistemas de la pileta y se 
 desde un bot de Telegram:
 
 1. **Calentador** — sensor de temperatura DS18B20 + relé. Arranca **apagado**; se activa desde Telegram (automático o forzado ON).
-2. **Luces disco** — sensor de sonido + 8 LEDs (4 colores × 2 lados). En modo automático quedan **prendidas** y la música las va **apagando** al ritmo (efecto en negativo). Arrancan apagadas; se activan desde Telegram.
+2. **Luces disco** — sensor de sonido + 8 LEDs (4 colores × 2 lados). En modo automático: sin música quedan **prendidas**, con música una **"sombra" recorre los colores** y cada golpe del ritmo las **apaga un instante** (strobe). Arrancan apagadas; se activan desde Telegram.
 3. **Cobertor** — 2 motores por L298N + fines de carrera. Abre/cierra desde Telegram y frena solo al llegar al tope.
 4. **Pantalla LCD** — muestra la temperatura y el estado en vivo.
 
@@ -79,12 +79,12 @@ títulos (`// ==========`). Cada bloque tiene una única responsabilidad:
 | **AJUSTES DEL CALENTADOR** | Temperatura objetivo, histéresis y cómo funciona el relé |
 | **AJUSTES DE LUCES / SONIDO** | Parámetros de la medición de sonido y la detección de ritmo |
 | **TIEMPOS** | Cada cuánto se lee la temperatura, se revisa Telegram y el timeout de WiFi |
-| **OBJETOS PRINCIPALES** | Sensores, pantalla, FFT, WiFi y el bot |
+| **OBJETOS PRINCIPALES** | Sensores, pantalla, WiFi y el bot |
 | **ESTADO DEL SISTEMA** | Variables y los "modos" (calentador y luces: AUTO / ON / OFF) |
 | **setup()** | Se ejecuta **una vez** al encender: configura todo y conecta el WiFi |
 | **loop()** | Se repite **siempre** (ver abajo) |
 | **CALENTADOR** | Funciones para leer la temperatura y prender/apagar el relé |
-| **SONIDO + LUCES** | Muestreo del micrófono, análisis FFT y patrones de las luces |
+| **SONIDO + LUCES** | Medición del sonido, detección de golpes y patrones de las luces |
 | **TELEGRAM** | Conexión, lectura de comandos y ejecución |
 | **MENSAJES** | Arma los textos que el bot responde (/status, /temp, /audio, ayuda) |
 
@@ -134,7 +134,7 @@ Perillas disponibles en el código, por si hiciera falta afinar:
 Escribile `/start` al bot para ver el menú. Comandos:
 
 **Luces** (arrancan apagadas)
-- `/luces_auto` — quedan prendidas y se apagan al ritmo de la música (sin música, prendidas fijas)
+- `/luces_auto` — sombra rotante con la música y strobe en cada golpe (sin música, prendidas fijas)
 - `/luces_on` — todas prendidas fijas
 - `/luces_off` — todas apagadas
 

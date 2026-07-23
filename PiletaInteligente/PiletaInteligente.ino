@@ -96,7 +96,7 @@ const int RELE_ON  = LOW;
 const int RELE_OFF = HIGH;
 
 // ============================================================
-//   AJUSTES DE LAS LUCES / SONIDO (análisis FFT)
+//   AJUSTES DE LAS LUCES / SONIDO
 // ============================================================
 
 // --- Medición del sonido (sin FFT) ---
@@ -799,7 +799,7 @@ String armarTemp() {
 
 // Diagnóstico del micrófono: lee la señal CRUDA del ADC durante ~50 ms y devuelve
 // el mínimo, el máximo y la diferencia (pico a pico). Sirve para saber si el sensor
-// está entregando señal útil, sin que la FFT ni los umbrales enmascaren el dato.
+// está entregando señal útil, sin que ningún umbral enmascare el dato.
 String armarDiagnosticoMicrofono() {
   const int MUESTRAS_DIAG = 500;
 
