@@ -721,6 +721,9 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   else if (text == "/audio") {
     bot.sendMessage(chat_id, armarAudio(), "");
   }
+  else if (text == "/diag") {
+    bot.sendMessage(chat_id, armarDiagnosticoMicrofono(), "");
+  }
   else if (text == "/ip") {
     if (WiFi.status() == WL_CONNECTED) {
       bot.sendMessage(chat_id, "IP del ESP32: " + WiFi.localIP().toString(), "");
@@ -757,6 +760,7 @@ String armarAyuda(String from_name) {
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
   s += "/audio - datos del sonido\n";
+  s += "/diag - diagnostico del microfono\n";
   s += "/ip - IP del ESP32";
   return s;
 }
@@ -793,6 +797,47 @@ String armarTemp() {
   s += "Calentador: ";
   s += (calentadorEncendido ? "ON" : "OFF");
   s += " (" + modoCalentadorTexto() + ")";
+  return s;
+}
+
+// Diagnóstico del micrófono: lee la señal CRUDA del ADC durante ~50 ms y devuelve
+// el mínimo, el máximo y la diferencia (pico a pico). Sirve para saber si el sensor
+// está entregando señal útil, sin que la FFT ni los umbrales enmascaren el dato.
+String armarDiagnosticoMicrofono() {
+  const int MUESTRAS_DIAG = 500;
+
+  int minimo = 4095;
+  int maximo = 0;
+  long suma  = 0;
+
+  for (int i = 0; i < MUESTRAS_DIAG; i++) {
+    int lectura = analogRead(MIC_PIN);
+    if (lectura < minimo) minimo = lectura;
+    if (lectura > maximo) maximo = lectura;
+    suma += lectura;
+    delayMicroseconds(100);   // ~10 kHz de muestreo => ~50 ms en total
+  }
+
+  int picoAPico = maximo - minimo;
+  int promedio  = suma / MUESTRAS_DIAG;
+
+  String s = "DIAGNOSTICO DEL MICROFONO\n";
+  s += "(valores crudos del ADC, 0-4095)\n\n";
+  s += "Minimo: " + String(minimo) + "\n";
+  s += "Maximo: " + String(maximo) + "\n";
+  s += "PICO A PICO: " + String(picoAPico) + "\n";
+  s += "Promedio (DC): " + String(promedio) + "\n\n";
+
+  if (picoAPico < 20) {
+    s += "=> Senal MUY DEBIL o nula. El sensor casi no esta captando.";
+  } else if (picoAPico < 100) {
+    s += "=> Senal DEBIL. Sirve para ruidos fuertes, no para musica.";
+  } else if (picoAPico < 500) {
+    s += "=> Senal ACEPTABLE. Deberia alcanzar para las luces.";
+  } else {
+    s += "=> Senal FUERTE. De sobra para las luces.";
+  }
+
   return s;
 }
 
