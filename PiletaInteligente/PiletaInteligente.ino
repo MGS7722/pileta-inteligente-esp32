@@ -108,25 +108,18 @@ const int BANDA_AGUDOS_MAX = 6000;
 // Si graves > agudos * UMBRAL => predomina el bajo (Música A)
 const float UMBRAL_CLASIFICACION = 1.3;
 
-// --- Sensibilidad del micrófono (CALIBRADO con mediciones reales del /diag) ---
-// Se mide el "pico a pico" de la señal: la diferencia entre el valor más alto y
-// el más bajo del sonido. Valores medidos en este equipo:
-//   ~17  -> sala en silencio / ruido ambiente
-//   ~26  -> alguien hablando cerca
-//   ~177 -> grito fuerte pegado al sensor
-// Si las luces reaccionan poco, BAJAR SONIDO_MAXIMO (ej. 120).
-// Si reaccionan al mínimo ruido, SUBIR RUIDO_DE_FONDO (ej. 40).
-const int RUIDO_DE_FONDO = 30;    // Por debajo de esto se considera silencio
-const int SONIDO_MAXIMO  = 150;   // A este nivel el efecto llega al máximo
-
 // Las luces trabajan SOLO en dos estados: prendidas o apagadas (nunca a media
-// luz), para no forzar los LEDs y para no generar el ruido eléctrico del PWM,
-// que ensucia la lectura del micrófono.
+// luz), para no forzar los LEDs y para no meter el ruido eléctrico del PWM.
 //
-// UMBRAL_APAGADO = a partir de qué volumen (pico a pico) se apagan.
-//   Más BAJO  => se apagan con cualquier sonido (más sensible).
-//   Más ALTO  => solo se apagan con los golpes fuertes.
-const int UMBRAL_APAGADO = 50;
+// --- Detección de ritmo ADAPTATIVA ---
+// El sistema aprende solo el nivel de ruido ambiente (la "base") y considera
+// GOLPE cuando el volumen instantáneo la supera con margen. Así reacciona igual
+// con música fuerte o suave, sin depender de un umbral fijo.
+const float FACTOR_GOLPE = 1.6;   // El volumen debe superar base*FACTOR para ser golpe
+const int   GOLPE_MINIMO = 32;    // Piso absoluto: nunca disparar por debajo de esto
+const int   SONIDO_MINIMO = 26;   // Piso de "hay sonido" (para elegir efecto A/B)
+const unsigned long DURACION_APAGON_MS = 110;  // Cuánto quedan apagadas en cada golpe
+const unsigned long REFRACTARIO_MS     = 150;  // Espera mínima entre golpes seguidos
 
 // ============================================================
 //   AJUSTES DEL COBERTOR
@@ -182,6 +175,9 @@ double ultimaEnergiaTotal  = 0;
 double ultimoVolumen = 0;
 int    ultimoBrillo  = 0;
 int    ultimoPicoAPico = 0;   // Volumen real medido (max - min de las muestras)
+float  p2pBase = 20;          // Nivel de ruido ambiente aprendido (se adapta solo)
+unsigned long ultimoMomentoConSonido = 0;  // Para dar memoria a la clasificación A/B
+unsigned long inicioApagon = 0;            // Cuándo empezó el último apagón por golpe
 
 // --- Cobertor ---
 enum EstadoCobertor { COB_PARADO, COB_ABRIENDO, COB_CERRANDO };
@@ -379,6 +375,12 @@ void muestrearAudio() {
   // de reposo del micrófono (se cancela solo al restar).
   ultimoPicoAPico = maximo - minimo;
 
+  // La base aprende el nivel ambiente: baja rápido y sube lento, así un golpe
+  // puntual no la "infla" pero el sistema se acomoda al volumen general.
+  float alfa = (ultimoPicoAPico > p2pBase) ? 0.02f : 0.06f;
+  p2pBase += alfa * (ultimoPicoAPico - p2pBase);
+  p2pBase = constrain(p2pBase, 12.0f, 150.0f);
+
   // Quitar el nivel de reposo (DC) antes de la FFT. Sin esto, el valor constante
   // del micrófono (~250) contamina los primeros bins y falsea los graves.
   double nivelDeReposo = (double)suma / SAMPLES;
@@ -411,9 +413,13 @@ void clasificarMusica() {
   ultimaEnergiaAgudos = energiaAgudos;
   ultimaEnergiaTotal  = energiaGraves + energiaAgudos;
 
-  // Hay silencio o no según el VOLUMEN real (pico a pico), no según la energía
-  // de dos bandas sueltas del espectro.
-  if (ultimoPicoAPico < RUIDO_DE_FONDO) {
+  // "Hay sonido" cuando el volumen sobresale del ambiente aprendido. Se le da
+  // memoria de 800 ms para que la clasificación no parpadee entre beats.
+  bool haySonidoAhora = (ultimoPicoAPico >= SONIDO_MINIMO) &&
+                        (ultimoPicoAPico >= p2pBase * 1.15f);
+  if (haySonidoAhora) ultimoMomentoConSonido = millis();
+
+  if (millis() - ultimoMomentoConSonido > 800) {
     tipoMusicaActual = SIN_SONIDO;
   } else if (energiaGraves > energiaAgudos * UMBRAL_CLASIFICACION) {
     tipoMusicaActual = MUSICA_A;   // Predominan los graves (reggaetón, electrónica)
@@ -435,47 +441,50 @@ void actualizarLucesSegunModo() {
   actualizarLucesSonido();   // LUCES_AUTO
 }
 
-// Modo AUTO: patrón de luces según el tipo de música detectado.
-// Las luces son SIEMPRE prendido o apagado, nunca a media luz.
+// Modo AUTO: luces prendidas; cada GOLPE del ritmo las apaga un instante.
+// Siempre prendido o apagado pleno, nunca a media luz.
 void actualizarLucesSonido() {
-  // ¿El sonido llegó al nivel que apaga las luces?
-  bool hayGolpe = (ultimoPicoAPico >= UMBRAL_APAGADO);
+  unsigned long ahora = millis();
+
+  // ¿Golpe? El volumen superó a la base con margen y pasó el período refractario.
+  bool superaUmbral = (ultimoPicoAPico >= p2pBase * FACTOR_GOLPE) &&
+                      (ultimoPicoAPico >= GOLPE_MINIMO);
+  if (superaUmbral && (ahora - inicioApagon) >= (DURACION_APAGON_MS + REFRACTARIO_MS)) {
+    inicioApagon = ahora;   // Arranca un apagón nuevo
+  }
+
+  // Las luces quedan apagadas mientras dura el apagón del último golpe.
+  bool apagadas = (ahora - inicioApagon) < DURACION_APAGON_MS;
 
   ultimoVolumen = ultimoPicoAPico;
-  ultimoBrillo  = hayGolpe ? 0 : 255;
+  ultimoBrillo  = apagadas ? 0 : 255;
 
-  int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
+  if (apagadas) {
+    apagarTodasLasLuces();
+    return;
+  }
 
   switch (tipoMusicaActual) {
-
-    case MUSICA_A: {
-      // Graves: los 4 colores se apagan de golpe con cada beat del bajo.
-      for (int i = 0; i < 4; i++) {
-        digitalWrite(colores[i], hayGolpe ? LOW : HIGH);
-      }
-      break;
-    }
 
     case MUSICA_B: {
       // Agudos/voz: una "sombra" recorre los colores (todos prendidos menos uno).
       static int posicion = 0;
       static unsigned long ultimoPaso = 0;
-      unsigned long ahora = millis();
-
       if (ahora - ultimoPaso > 100) {
         ultimoPaso = ahora;
         posicion = (posicion + 1) % 4;
       }
-
+      int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
       for (int i = 0; i < 4; i++) {
         digitalWrite(colores[i], (i == posicion) ? LOW : HIGH);
       }
       break;
     }
 
+    case MUSICA_A:
     case SIN_SONIDO:
     default: {
-      // Sin música: quedan todas prendidas fijas.
+      // Graves o silencio: prendidas fijas, esperando el próximo golpe.
       prenderTodasLasLuces();
       break;
     }
@@ -878,8 +887,9 @@ String armarAudio() {
   String s = "AUDIO\n";
   s += "Música: " + tipoMusicaTexto() + "\n";
   s += "VOLUMEN (pico a pico): " + String(ultimoPicoAPico) + "\n";
-  s += "  (silencio<" + String(RUIDO_DE_FONDO);
-  s += " / se apagan en " + String(UMBRAL_APAGADO) + ")\n";
+  s += "Base ambiente (aprendida): " + String(p2pBase, 1) + "\n";
+  int umbralGolpe = max((int)(p2pBase * FACTOR_GOLPE), GOLPE_MINIMO);
+  s += "Golpe a partir de: " + String(umbralGolpe) + "\n";
   s += "Luces ahora: ";
   s += (ultimoBrillo > 0 ? "PRENDIDAS" : "APAGADAS");
   s += "\n\n";

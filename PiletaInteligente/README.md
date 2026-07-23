@@ -112,22 +112,21 @@ comandos configuran, y los bloques ejecutan.
 
 ### Ajustar la sensibilidad de las luces
 
-Las luces trabajan **solo prendidas o apagadas** (nunca a media luz), para no forzar los
-LEDs y para no meterle ruido eléctrico al micrófono.
+Las luces trabajan **solo prendidas o apagadas** (nunca a media luz). La detección de
+ritmo es **adaptativa**: el sistema aprende solo el nivel de ruido ambiente (la "base")
+y apaga las luces un instante en cada golpe que sobresale de esa base. No hay que
+calibrar según el volumen: se acomoda solo.
 
-En la sección de ajustes están estas constantes, **calibradas con mediciones reales** de
-este equipo (con el comando `/diag`):
+Perillas disponibles en el código, por si hiciera falta afinar:
 
 | Constante | Valor | Qué hace |
 |---|---|---|
-| `RUIDO_DE_FONDO` | 30 | Por debajo de este volumen se considera silencio |
-| `UMBRAL_APAGADO` | 50 | A partir de este volumen las luces se apagan |
+| `FACTOR_GOLPE` | 1.6 | Cuánto debe sobresalir el golpe sobre el ambiente (bajar = más sensible) |
+| `GOLPE_MINIMO` | 32 | Piso absoluto para disparar (evita falsos golpes en silencio) |
+| `DURACION_APAGON_MS` | 110 | Cuántos milisegundos quedan apagadas en cada golpe |
 
-**Si las luces reaccionan poco** → bajá `UMBRAL_APAGADO` (ej. 35).
-**Si reaccionan a cualquier ruido** → subilo (ej. 70).
-
-> 💡 Para calibrar: mandá `/audio` con música sonando y mirá el valor de **VOLUMEN
-> (pico a pico)**. Poné `UMBRAL_APAGADO` un poco por debajo de ese número.
+> 💡 Para ver los números en vivo: mandá `/audio` con música sonando. Muestra el
+> volumen actual, la base aprendida y a partir de qué valor se dispara el golpe.
 
 ---
 
