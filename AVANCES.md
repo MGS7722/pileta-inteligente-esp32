@@ -60,3 +60,24 @@
 - Todo subido a GitHub y a la carpeta del Drive "Tecnicas Digitales"
 - **Pendiente de probar en hardware** por Mariano (montar el cobertor, cargar el sketch y probar
   los 3 sistemas + comandos de Telegram; calibrar giro y velocidad de los motores)
+
+### Sesión 2026-07-23
+- Prueba en hardware real: WiFi, Telegram, sensor de temperatura, LCD, relé y luces ON/OFF ✔
+- Problema detectado: las luces en AUTO no reaccionaban a la música. Diagnóstico con el comando
+  nuevo `/diag` (señal cruda del ADC): el micrófono HW-484 a 3.3V entrega una señal debilísima
+  (pico a pico ~17 ambiente / ~40 música baja / ~177 grito) que se solapa con el ruido ambiente —
+  ningún umbral fijo puede separarlos
+- Fix 1: volumen medido por pico a pico + DC quitado antes de la FFT (los "graves" daban falsos)
+- Fix 2: luces solo prendidas/apagadas (sin PWM), para cuidar los LEDs y no ensuciar el micrófono
+- Fix 3 (definitivo): **detección de ritmo adaptativa** — el sistema aprende solo el nivel
+  ambiente (base) y dispara un apagón de 110 ms en cada golpe que la supera con margen
+  (plan LEGO en `docs/PLAN-LUCES-ADAPTATIVAS.md`, ejecutado por Sonnet, auditado por Fable)
+- Mejora de hardware pendiente de verificar: alimentar el sensor de sonido con 5V (pin VIN) en
+  vez de 3.3V — el módulo pide 4-6V; verificar con `/diag` que el Máximo quede lejos de 4095
+
+#### Atribución por modelo (sesión 2026-07-23)
+- **Opus 4.8**: /diag, pico a pico + DC removal, luces binarias, efecto en negativo (commits
+  hasta `7477557`)
+- **Fable 5**: investigación del sensor, diagnóstico con mediciones, plan LEGO adaptativo,
+  auditoría del diff, docs
+- **Sonnet 5** (subagente ejecutor): implementación del plan adaptativo (commit `b785ddc`)

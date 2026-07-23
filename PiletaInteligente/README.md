@@ -20,8 +20,8 @@ Primero, en **Gestor de Tarjetas** instalá el core de la placa:
 |---|---|---|
 | esp32 | **3.3.10** | Espressif Systems |
 
-> ⚠️ El core **3.x** es obligatorio: el programa usa `analogWrite()` en los LEDs,
-> que en el core 2.x no existe.
+> ⚠️ El core **3.x** es obligatorio: el programa usa `analogWrite()` para la
+> velocidad de los motores del cobertor, que en el core 2.x no existe.
 
 Después, en **Gestor de Librerías**, instalá estas 6 con **estas versiones** (son las
 que ya están probadas y funcionando):
