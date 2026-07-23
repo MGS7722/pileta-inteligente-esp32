@@ -9,10 +9,10 @@
 //                        Arranca APAGADO; se activa desde Telegram
 //                        (automático con histéresis, o forzado ON).
 //     2) LUCES DISCO  -> Sensor de sonido + 8 LEDs (4 colores x 2
-//                        lados). En modo AUTO quedan prendidas y la
-//                        música las va apagando al ritmo (efecto en
-//                        negativo). Arrancan APAGADAS; se activan
-//                        desde Telegram.
+//                        lados). En modo AUTO: sin música quedan
+//                        prendidas, con música una "sombra" recorre
+//                        los colores y cada golpe del ritmo las apaga
+//                        un instante (strobe). Arrancan APAGADAS.
 //     3) COBERTOR     -> 2 motores por L298N + 2 fines de carrera.
 //                        Abre/cierra desde Telegram; frena solo al
 //                        llegar al tope.
@@ -47,12 +47,12 @@
 #include <LiquidCrystal_I2C.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <arduinoFFT.h>
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <UniversalTelegramBot.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
 // ============================================================
 //   PINES
@@ -85,7 +85,10 @@
 //   AJUSTES DEL CALENTADOR
 // ============================================================
 
-const float TEMP_OBJETIVO = 23.0;   // Temperatura buscada (subir a ~30 para uso real)
+// La temperatura objetivo se cambia desde Telegram con /temperatura y queda
+// guardada en la memoria del ESP32 (sobrevive reinicios). 23.0 es el valor
+// inicial de fábrica.
+float tempObjetivo = 23.0;
 const float HISTERESIS    = 5.0;    // Margen para no prender/apagar a cada rato
 
 // El relé es activo-bajo: LOW lo prende, HIGH lo apaga.
@@ -96,17 +99,13 @@ const int RELE_OFF = HIGH;
 //   AJUSTES DE LAS LUCES / SONIDO (análisis FFT)
 // ============================================================
 
-#define SAMPLES 128                 // Cantidad de muestras (debe ser potencia de 2)
-#define SAMPLING_FREQUENCY 10000    // Frecuencia de muestreo en Hz
-
-// Bandas de frecuencia para clasificar el tipo de música
-const int BANDA_GRAVES_MIN = 60;
-const int BANDA_GRAVES_MAX = 250;
-const int BANDA_AGUDOS_MIN = 2000;
-const int BANDA_AGUDOS_MAX = 6000;
-
-// Si graves > agudos * UMBRAL => predomina el bajo (Música A)
-const float UMBRAL_CLASIFICACION = 1.3;
+// --- Medición del sonido (sin FFT) ---
+// Con la señal débil de este micrófono, el análisis de frecuencias no aporta
+// información confiable: lo único robusto es el VOLUMEN pico a pico. La ventana
+// de ~35 ms es clave: un golpe de bombo dura 50-100 ms, y con ventanas más
+// cortas la medición cae "entre" los picos y el beat se pierde.
+const int MUESTRAS_SONIDO = 350;                 // 350 muestras a 10 kHz = ~35 ms
+const unsigned long PERIODO_MUESTREO_US = 100;   // 10 kHz de muestreo
 
 // Las luces trabajan SOLO en dos estados: prendidas o apagadas (nunca a media
 // luz), para no forzar los LEDs y para no meter el ruido eléctrico del PWM.
@@ -144,9 +143,7 @@ OneWire            oneWire(PIN_DS18B20);
 DallasTemperature  sensores(&oneWire);
 LiquidCrystal_I2C  lcd(0x27, 16, 2);
 
-double vReal[SAMPLES];
-double vImag[SAMPLES];
-ArduinoFFT<double> FFT = ArduinoFFT<double>(vReal, vImag, SAMPLES, SAMPLING_FREQUENCY);
+Preferences preferencias;   // Memoria no volátil (guarda la temperatura objetivo)
 
 WiFiClientSecure     client;
 UniversalTelegramBot bot(BOT_TOKEN, client);
@@ -163,20 +160,14 @@ float ultimaTemp = 0.0;
 bool  sensorTempOk = false;
 
 // --- Luces ---
-enum TipoMusica { MUSICA_A, MUSICA_B, SIN_SONIDO };
-TipoMusica tipoMusicaActual = SIN_SONIDO;
-
 enum ModoLuces { LUCES_AUTO, LUCES_ON, LUCES_OFF };
 ModoLuces modoLuces = LUCES_OFF;   // Por defecto: apagadas (se activan desde Telegram)
 
-double ultimaEnergiaGraves = 0;
-double ultimaEnergiaAgudos = 0;
-double ultimaEnergiaTotal  = 0;
-double ultimoVolumen = 0;
 int    ultimoBrillo  = 0;
 int    ultimoPicoAPico = 0;   // Volumen real medido (max - min de las muestras)
 float  p2pBase = 20;          // Nivel de ruido ambiente aprendido (se adapta solo)
-unsigned long ultimoMomentoConSonido = 0;  // Para dar memoria a la clasificación A/B
+unsigned long ultimoMomentoConSonido = 0;  // Memoria de 800 ms de "hay música"
+bool hayMusica = false;                    // true mientras se detecta sonido sostenido
 unsigned long inicioApagon = 0;            // Cuándo empezó el último apagón por golpe
 
 // --- Cobertor ---
@@ -211,6 +202,10 @@ void setup() {
   // Cobertor (motores frenados al arrancar)
   setupCobertor();
 
+  // Temperatura objetivo guardada (si nunca se configuró, queda 23.0)
+  preferencias.begin("pileta", false);
+  tempObjetivo = preferencias.getFloat("tempObj", 23.0);
+
   // Sensor de temperatura
   sensores.begin();
   sensores.setResolution(12);
@@ -243,8 +238,7 @@ void setup() {
 
 void loop() {
   // 1) Sonido y luces → en cada vuelta.
-  muestrearAudio();
-  clasificarMusica();
+  medirSonido();
   actualizarLucesSegunModo();
 
   // 2) Cobertor → máquina de estados no bloqueante (frena al llegar al tope).
@@ -298,9 +292,9 @@ void actualizarTemperatura() {
 
     case CALEF_AUTO:
     default:
-      if (!calentadorEncendido && temp < (TEMP_OBJETIVO - HISTERESIS)) {
+      if (!calentadorEncendido && temp < (tempObjetivo - HISTERESIS)) {
         prenderCalentador();
-      } else if (calentadorEncendido && temp >= TEMP_OBJETIVO) {
+      } else if (calentadorEncendido && temp >= tempObjetivo) {
         apagarCalentador();
       }
       break;
@@ -345,34 +339,23 @@ void apagarCalentador() {
 //   SONIDO + LUCES
 // ============================================================
 
-// Toma SAMPLES muestras del micrófono a SAMPLING_FREQUENCY Hz.
-// Calcula el pico a pico (cuánto sonido hay) y prepara la FFT (qué frecuencias hay).
-void muestrearAudio() {
-  unsigned long periodo = 1000000UL / SAMPLING_FREQUENCY;  // microsegundos entre muestras
+// Mide el sonido en una ventana de ~35 ms: pico a pico (volumen real), base
+// adaptativa del ambiente y si hay sonido sostenido. Sin FFT: con la señal
+// débil de este micrófono, el volumen es la única medida confiable.
+void medirSonido() {
+  int minimo = 4095;
+  int maximo = 0;
 
-  int  minimo = 4095;
-  int  maximo = 0;
-  long suma   = 0;
-
-  for (int i = 0; i < SAMPLES; i++) {
-    unsigned long tiempoMicros = micros();
-
+  for (int i = 0; i < MUESTRAS_SONIDO; i++) {
+    unsigned long t = micros();
     int lectura = analogRead(MIC_PIN);
-    vReal[i] = lectura;
-    vImag[i] = 0;
-
     if (lectura < minimo) minimo = lectura;
     if (lectura > maximo) maximo = lectura;
-    suma += lectura;
-
-    while (micros() - tiempoMicros < periodo) {
+    while (micros() - t < PERIODO_MUESTREO_US) {
       // espera para mantener constante la frecuencia de muestreo
     }
   }
 
-  // Cuánto sonido hay: la diferencia entre el pico más alto y el más bajo.
-  // Es la medida más directa y sensible del volumen, y no le afecta el nivel
-  // de reposo del micrófono (se cancela solo al restar).
   ultimoPicoAPico = maximo - minimo;
 
   // La base aprende el nivel ambiente: baja rápido y sube lento, así un golpe
@@ -381,51 +364,12 @@ void muestrearAudio() {
   p2pBase += alfa * (ultimoPicoAPico - p2pBase);
   p2pBase = constrain(p2pBase, 12.0f, 150.0f);
 
-  // Quitar el nivel de reposo (DC) antes de la FFT. Sin esto, el valor constante
-  // del micrófono (~250) contamina los primeros bins y falsea los graves.
-  double nivelDeReposo = (double)suma / SAMPLES;
-  for (int i = 0; i < SAMPLES; i++) {
-    vReal[i] -= nivelDeReposo;
-  }
-
-  FFT.windowing(FFTWindow::Hamming, FFTDirection::Forward);
-  FFT.compute(FFTDirection::Forward);
-  FFT.complexToMagnitude();
-}
-
-// Compara la energía de graves vs. agudos y define el tipo de música.
-void clasificarMusica() {
-  double energiaGraves = 0;
-  double energiaAgudos = 0;
-
-  for (int i = 1; i < (SAMPLES / 2); i++) {
-    double frecuencia = (i * 1.0 * SAMPLING_FREQUENCY) / SAMPLES;
-
-    if (frecuencia >= BANDA_GRAVES_MIN && frecuencia <= BANDA_GRAVES_MAX) {
-      energiaGraves += vReal[i];
-    }
-    if (frecuencia >= BANDA_AGUDOS_MIN && frecuencia <= BANDA_AGUDOS_MAX) {
-      energiaAgudos += vReal[i];
-    }
-  }
-
-  ultimaEnergiaGraves = energiaGraves;
-  ultimaEnergiaAgudos = energiaAgudos;
-  ultimaEnergiaTotal  = energiaGraves + energiaAgudos;
-
-  // "Hay sonido" cuando el volumen sobresale del ambiente aprendido. Se le da
-  // memoria de 800 ms para que la clasificación no parpadee entre beats.
+  // ¿Hay música? El volumen sobresale del ambiente aprendido, con memoria de
+  // 800 ms para que la detección no parpadee entre beats.
   bool haySonidoAhora = (ultimoPicoAPico >= SONIDO_MINIMO) &&
                         (ultimoPicoAPico >= p2pBase * 1.15f);
   if (haySonidoAhora) ultimoMomentoConSonido = millis();
-
-  if (millis() - ultimoMomentoConSonido > 800) {
-    tipoMusicaActual = SIN_SONIDO;
-  } else if (energiaGraves > energiaAgudos * UMBRAL_CLASIFICACION) {
-    tipoMusicaActual = MUSICA_A;   // Predominan los graves (reggaetón, electrónica)
-  } else {
-    tipoMusicaActual = MUSICA_B;   // Predominan agudos/medios (voz, acústico)
-  }
+  hayMusica = (millis() - ultimoMomentoConSonido) < 800;
 }
 
 // Aplica el modo de luces elegido (AUTO / ON / OFF).
@@ -441,7 +385,8 @@ void actualizarLucesSegunModo() {
   actualizarLucesSonido();   // LUCES_AUTO
 }
 
-// Modo AUTO: luces prendidas; cada GOLPE del ritmo las apaga un instante.
+// Modo AUTO: sin música todas prendidas; con música una "sombra" recorre los
+// colores; y cada GOLPE del ritmo las apaga todas un instante (strobe).
 // Siempre prendido o apagado pleno, nunca a media luz.
 void actualizarLucesSonido() {
   unsigned long ahora = millis();
@@ -455,39 +400,28 @@ void actualizarLucesSonido() {
 
   // Las luces quedan apagadas mientras dura el apagón del último golpe.
   bool apagadas = (ahora - inicioApagon) < DURACION_APAGON_MS;
-
-  ultimoVolumen = ultimoPicoAPico;
-  ultimoBrillo  = apagadas ? 0 : 255;
+  ultimoBrillo = apagadas ? 0 : 255;
 
   if (apagadas) {
     apagarTodasLasLuces();
     return;
   }
 
-  switch (tipoMusicaActual) {
-
-    case MUSICA_B: {
-      // Agudos/voz: una "sombra" recorre los colores (todos prendidos menos uno).
-      static int posicion = 0;
-      static unsigned long ultimoPaso = 0;
-      if (ahora - ultimoPaso > 100) {
-        ultimoPaso = ahora;
-        posicion = (posicion + 1) % 4;
-      }
-      int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
-      for (int i = 0; i < 4; i++) {
-        digitalWrite(colores[i], (i == posicion) ? LOW : HIGH);
-      }
-      break;
+  if (hayMusica) {
+    // Sombra rotante: todos los colores prendidos menos uno, que va girando.
+    static int posicion = 0;
+    static unsigned long ultimoPaso = 0;
+    if (ahora - ultimoPaso > 100) {
+      ultimoPaso = ahora;
+      posicion = (posicion + 1) % 4;
     }
-
-    case MUSICA_A:
-    case SIN_SONIDO:
-    default: {
-      // Graves o silencio: prendidas fijas, esperando el próximo golpe.
-      prenderTodasLasLuces();
-      break;
+    int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
+    for (int i = 0; i < 4; i++) {
+      digitalWrite(colores[i], (i == posicion) ? LOW : HIGH);
     }
+  } else {
+    // Silencio: todas prendidas fijas, esperando que arranque la música.
+    prenderTodasLasLuces();
   }
 }
 
@@ -644,6 +578,7 @@ void conectarWiFiTelegram() {
     Serial.println(WiFi.localIP());
 
     client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
+    client.setTimeout(2000);   // Sin esto, una consulta lenta congela el show de luces
     telegramListo = true;
     Serial.println("Bot de Telegram listo.");
   } else {
@@ -665,6 +600,7 @@ void procesarTelegram() {
 
   if (!telegramListo) {
     client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
+    client.setTimeout(2000);
     telegramListo = true;
   }
 
@@ -760,6 +696,22 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   else if (text == "/temp") {
     bot.sendMessage(chat_id, armarTemp(), "");
   }
+  else if (text.startsWith("/temperatura")) {
+    String arg = text.substring(12);   // lo que viene después de "/temperatura"
+    arg.trim();
+    float nueva = arg.toFloat();
+    if (arg.length() == 0) {
+      bot.sendMessage(chat_id, "Temperatura objetivo actual: " + String(tempObjetivo, 1) +
+                               " C.\nPara cambiarla: /temperatura 28", "");
+    } else if (nueva < 15 || nueva > 35) {
+      bot.sendMessage(chat_id, "Valor invalido. Usa un numero entre 15 y 35. Ej: /temperatura 28", "");
+    } else {
+      tempObjetivo = nueva;
+      preferencias.putFloat("tempObj", tempObjetivo);
+      bot.sendMessage(chat_id, "Temperatura objetivo: " + String(tempObjetivo, 1) +
+                               " C. Guardada: sobrevive reinicios.", "");
+    }
+  }
   else if (text == "/audio") {
     bot.sendMessage(chat_id, armarAudio(), "");
   }
@@ -793,7 +745,8 @@ String armarAyuda(String from_name) {
   s += "CALENTADOR:\n";
   s += "/calentador_auto - automático por temperatura\n";
   s += "/calentador_on - forzar encendido\n";
-  s += "/calentador_off - forzar apagado\n\n";
+  s += "/calentador_off - forzar apagado\n";
+  s += "/temperatura 28 - cambiar la temperatura objetivo\n\n";
   s += "COBERTOR:\n";
   s += "/cobertor_abrir - destapar la pileta\n";
   s += "/cobertor_cerrar - tapar la pileta\n";
@@ -820,7 +773,9 @@ String armarStatus() {
   }
 
   s += "Luces: " + modoLucesTexto() + "\n";
-  s += "Música: " + tipoMusicaTexto() + "\n";
+  s += "Sonido: ";
+  s += (hayMusica ? "musica detectada" : "silencio");
+  s += "\n";
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
   s += "WiFi: ";
   s += (WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado");
@@ -834,7 +789,7 @@ String armarTemp() {
   } else {
     s += "ERROR: sensor desconectado.\n";
   }
-  s += "Objetivo: " + String(TEMP_OBJETIVO, 1) + " C\n";
+  s += "Objetivo: " + String(tempObjetivo, 1) + " C\n";
   s += "Histéresis: " + String(HISTERESIS, 1) + " C\n";
   s += "Calentador: ";
   s += (calentadorEncendido ? "ON" : "OFF");
@@ -885,16 +840,16 @@ String armarDiagnosticoMicrofono() {
 
 String armarAudio() {
   String s = "AUDIO\n";
-  s += "Música: " + tipoMusicaTexto() + "\n";
+  s += "Sonido: ";
+  s += (hayMusica ? "musica detectada" : "silencio");
+  s += "\n";
   s += "VOLUMEN (pico a pico): " + String(ultimoPicoAPico) + "\n";
   s += "Base ambiente (aprendida): " + String(p2pBase, 1) + "\n";
   int umbralGolpe = max((int)(p2pBase * FACTOR_GOLPE), GOLPE_MINIMO);
   s += "Golpe a partir de: " + String(umbralGolpe) + "\n";
   s += "Luces ahora: ";
   s += (ultimoBrillo > 0 ? "PRENDIDAS" : "APAGADAS");
-  s += "\n\n";
-  s += "Graves: " + String(ultimaEnergiaGraves, 1) + "\n";
-  s += "Agudos: " + String(ultimaEnergiaAgudos, 1) + "\n";
+  s += "\n";
   s += "Modo luces: " + modoLucesTexto();
   return s;
 }
@@ -913,15 +868,6 @@ String modoLucesTexto() {
     case LUCES_AUTO: return "AUTO";
     case LUCES_ON:   return "ON";
     case LUCES_OFF:  return "OFF";
-    default:         return "?";
-  }
-}
-
-String tipoMusicaTexto() {
-  switch (tipoMusicaActual) {
-    case MUSICA_A:   return "graves";
-    case MUSICA_B:   return "agudos/voz";
-    case SIN_SONIDO: return "sin sonido";
     default:         return "?";
   }
 }

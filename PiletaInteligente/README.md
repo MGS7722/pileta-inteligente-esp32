@@ -23,7 +23,7 @@ Primero, en **Gestor de Tarjetas** instalá el core de la placa:
 > ⚠️ El core **3.x** es obligatorio: el programa usa `analogWrite()` para la
 > velocidad de los motores del cobertor, que en el core 2.x no existe.
 
-Después, en **Gestor de Librerías**, instalá estas 6 con **estas versiones** (son las
+Después, en **Gestor de Librerías**, instalá estas 5 con **estas versiones** (son las
 que ya están probadas y funcionando):
 
 | Librería | Versión exacta | Autor |
@@ -31,7 +31,6 @@ que ya están probadas y funcionando):
 | OneWire | **2.3.8** | Paul Stoffregen |
 | DallasTemperature | **4.0.6** | Miles Burton |
 | LiquidCrystal I2C | **1.1.2** | Frank de Brabander |
-| arduinoFFT | **2.0.4** | Enrique Condes |
 | UniversalTelegramBot | **1.3.0** | Brian Lough |
 | **ArduinoJson** | **6.21.5** | Benoît Blanchon |
 
@@ -78,7 +77,7 @@ títulos (`// ==========`). Cada bloque tiene una única responsabilidad:
 | **Encabezado** | Comentario inicial: qué hace el programa y el mapa de conexiones |
 | **PINES** | Qué pin del ESP32 va a cada componente |
 | **AJUSTES DEL CALENTADOR** | Temperatura objetivo, histéresis y cómo funciona el relé |
-| **AJUSTES DE LUCES / SONIDO** | Parámetros del análisis de sonido (FFT) y bandas de frecuencia |
+| **AJUSTES DE LUCES / SONIDO** | Parámetros de la medición de sonido y la detección de ritmo |
 | **TIEMPOS** | Cada cuánto se lee la temperatura, se revisa Telegram y el timeout de WiFi |
 | **OBJETOS PRINCIPALES** | Sensores, pantalla, FFT, WiFi y el bot |
 | **ESTADO DEL SISTEMA** | Variables y los "modos" (calentador y luces: AUTO / ON / OFF) |
@@ -143,6 +142,7 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/calentador_auto` — que se regule solo por la temperatura
 - `/calentador_on` — forzar encendido
 - `/calentador_off` — forzar apagado
+- `/temperatura 28` — cambiar la temperatura objetivo (queda guardada)
 
 **Cobertor**
 - `/cobertor_abrir` — destapar la pileta
