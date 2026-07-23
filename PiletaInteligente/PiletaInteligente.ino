@@ -69,7 +69,10 @@
 #define LED_ROJO    17
 #define LED_AZUL    18
 #define LED_BLANCO  19
-#define MIC_PIN     34    // Sensor de sonido. ADC1 (no usar ADC2: choca con WiFi).
+#define MIC_PIN     34    // Sensor de sonido 1, salida AO. ADC1 (no usar ADC2: choca con WiFi).
+#define MIC_DO_PIN  35    // Sensor de sonido 2, salida DO (golpes por hardware).
+                          // El módulo 2 se alimenta a 3.3V: así su DO nunca supera
+                          // los 3.3V que tolera el ESP32. NO alimentarlo con 5V.
 
 // --- Cobertor (Sistema 3): L298N + 2 motores + 2 fines de carrera ---
 #define MOTOR_A_IN1 13    // Motor A = lado del rodillo de la lona
@@ -120,6 +123,11 @@ const int   SONIDO_MINIMO = 26;   // Piso de "hay sonido" (para elegir efecto A/
 const unsigned long DURACION_APAGON_MS = 110;  // Cuánto quedan apagadas en cada golpe
 const unsigned long REFRACTARIO_MS     = 150;  // Espera mínima entre golpes seguidos
 
+// Canal DO (2do micrófono): un golpe real produce POCOS cambios de estado por
+// ventana; un pin desconectado (flotante) produce muchísimos. Por encima de este
+// tope, la lectura del DO se descarta como ruido.
+const int FLANCOS_DO_MAXIMO = 8;
+
 // ============================================================
 //   AJUSTES DEL COBERTOR
 // ============================================================
@@ -166,6 +174,13 @@ ModoLuces modoLuces = LUCES_OFF;   // Por defecto: apagadas (se activan desde Te
 int    ultimoBrillo  = 0;
 int    ultimoPicoAPico = 0;   // Volumen real medido (max - min de las muestras)
 float  p2pBase = 20;          // Nivel de ruido ambiente aprendido (se adapta solo)
+
+// Fuente de detección de golpes: MIXTA usa ambos micrófonos (el que dispare
+// primero); AO solo el análogo; DO solo el detector por hardware del módulo 2.
+enum FuenteGolpe { FUENTE_MIXTA, FUENTE_AO, FUENTE_DO };
+FuenteGolpe fuenteGolpe = FUENTE_MIXTA;
+int  ultimosFlancosDO = 0;    // Cambios de estado del DO en la última ventana
+bool golpeDO = false;         // true si el módulo 2 detectó golpe en la última ventana
 unsigned long ultimoMomentoConSonido = 0;  // Memoria de 800 ms de "hay música"
 bool hayMusica = false;                    // true mientras se detecta sonido sostenido
 unsigned long inicioApagon = 0;            // Cuándo empezó el último apagón por golpe
@@ -205,6 +220,7 @@ void setup() {
   // Temperatura objetivo guardada (si nunca se configuró, queda 23.0)
   preferencias.begin("pileta", false);
   tempObjetivo = preferencias.getFloat("tempObj", 23.0);
+  fuenteGolpe  = (FuenteGolpe)preferencias.getUChar("fuenteGolpe", FUENTE_MIXTA);
 
   // Sensor de temperatura
   sensores.begin();
@@ -220,8 +236,9 @@ void setup() {
   delay(2000);
   lcd.clear();
 
-  // Sensor de sonido
+  // Sensores de sonido (1: AO análogo; 2: DO golpes por hardware)
   pinMode(MIC_PIN, INPUT);
+  pinMode(MIC_DO_PIN, INPUT);   // GPIO35 es solo-entrada; el módulo 2 trae su pull-up
   analogReadResolution(12);                    // Lecturas de 0 a 4095
   analogSetPinAttenuation(MIC_PIN, ADC_11db);   // Rango ~0-3.3V
 
@@ -345,16 +362,34 @@ void apagarCalentador() {
 void medirSonido() {
   int minimo = 4095;
   int maximo = 0;
+  int flancos = 0;
+  bool estadoDO = digitalRead(MIC_DO_PIN);
 
   for (int i = 0; i < MUESTRAS_SONIDO; i++) {
     unsigned long t = micros();
+
     int lectura = analogRead(MIC_PIN);
     if (lectura < minimo) minimo = lectura;
     if (lectura > maximo) maximo = lectura;
+
+    // Canal DO: contar cambios de estado (golpes que superan el umbral del
+    // potenciómetro del módulo 2). Se cuentan flancos y no niveles para que
+    // funcione igual con módulos de polaridad invertida.
+    bool d = digitalRead(MIC_DO_PIN);
+    if (d != estadoDO) {
+      flancos++;
+      estadoDO = d;
+    }
+
     while (micros() - t < PERIODO_MUESTREO_US) {
       // espera para mantener constante la frecuencia de muestreo
     }
   }
+
+  // Un pin flotante (módulo 2 desconectado) genera decenas de flancos por
+  // ventana: en ese caso la lectura del DO se descarta.
+  ultimosFlancosDO = flancos;
+  golpeDO = (flancos > 0) && (flancos <= FLANCOS_DO_MAXIMO);
 
   ultimoPicoAPico = maximo - minimo;
 
@@ -368,8 +403,22 @@ void medirSonido() {
   // 800 ms para que la detección no parpadee entre beats.
   bool haySonidoAhora = (ultimoPicoAPico >= SONIDO_MINIMO) &&
                         (ultimoPicoAPico >= p2pBase * 1.15f);
+  if (usaDO() && golpeDO) haySonidoAhora = true;
   if (haySonidoAhora) ultimoMomentoConSonido = millis();
   hayMusica = (millis() - ultimoMomentoConSonido) < 800;
+}
+
+// ¿La fuente elegida incluye a cada canal?
+bool usaAO() { return fuenteGolpe == FUENTE_MIXTA || fuenteGolpe == FUENTE_AO; }
+bool usaDO() { return fuenteGolpe == FUENTE_MIXTA || fuenteGolpe == FUENTE_DO; }
+
+String fuenteGolpeTexto() {
+  switch (fuenteGolpe) {
+    case FUENTE_MIXTA: return "MIXTA (ambos microfonos)";
+    case FUENTE_AO:    return "AO (microfono analogico)";
+    case FUENTE_DO:    return "DO (detector por hardware)";
+    default:           return "?";
+  }
 }
 
 // Aplica el modo de luces elegido (AUTO / ON / OFF).
@@ -391,9 +440,11 @@ void actualizarLucesSegunModo() {
 void actualizarLucesSonido() {
   unsigned long ahora = millis();
 
-  // ¿Golpe? El volumen superó a la base con margen y pasó el período refractario.
-  bool superaUmbral = (ultimoPicoAPico >= p2pBase * FACTOR_GOLPE) &&
-                      (ultimoPicoAPico >= GOLPE_MINIMO);
+  // ¿Golpe? Según la fuente elegida: el canal AO (volumen supera a la base con
+  // margen), el canal DO (el módulo 2 lo detectó por hardware), o cualquiera.
+  bool golpeAO = (ultimoPicoAPico >= p2pBase * FACTOR_GOLPE) &&
+                 (ultimoPicoAPico >= GOLPE_MINIMO);
+  bool superaUmbral = (usaAO() && golpeAO) || (usaDO() && golpeDO);
   if (superaUmbral && (ahora - inicioApagon) >= (DURACION_APAGON_MS + REFRACTARIO_MS)) {
     inicioApagon = ahora;   // Arranca un apagón nuevo
   }
@@ -696,6 +747,14 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   else if (text == "/temp") {
     bot.sendMessage(chat_id, armarTemp(), "");
   }
+  else if (text == "/sonido_mixto" || text == "/sonido_ao" || text == "/sonido_do") {
+    if (text == "/sonido_mixto")   fuenteGolpe = FUENTE_MIXTA;
+    else if (text == "/sonido_ao") fuenteGolpe = FUENTE_AO;
+    else                           fuenteGolpe = FUENTE_DO;
+    preferencias.putUChar("fuenteGolpe", (uint8_t)fuenteGolpe);
+    bot.sendMessage(chat_id, "Fuente de golpes: " + fuenteGolpeTexto() +
+                             ". Guardada: sobrevive reinicios.", "");
+  }
   else if (text.startsWith("/temperatura")) {
     String arg = text.substring(12);   // lo que viene después de "/temperatura"
     arg.trim();
@@ -755,6 +814,7 @@ String armarAyuda(String from_name) {
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
   s += "/audio - datos del sonido\n";
+  s += "/sonido_mixto, /sonido_ao, /sonido_do - fuente de golpes\n";
   s += "/diag - diagnostico del microfono\n";
   s += "/ip - IP del ESP32";
   return s;
@@ -776,6 +836,7 @@ String armarStatus() {
   s += "Sonido: ";
   s += (hayMusica ? "musica detectada" : "silencio");
   s += "\n";
+  s += "Fuente golpes: " + fuenteGolpeTexto() + "\n";
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
   s += "WiFi: ";
   s += (WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado");
@@ -818,12 +879,16 @@ String armarDiagnosticoMicrofono() {
   int picoAPico = maximo - minimo;
   int promedio  = suma / MUESTRAS_DIAG;
 
+  // Estado del canal DO durante la misma medición
   String s = "DIAGNOSTICO DEL MICROFONO\n";
   s += "(valores crudos del ADC, 0-4095)\n\n";
   s += "Minimo: " + String(minimo) + "\n";
   s += "Maximo: " + String(maximo) + "\n";
   s += "PICO A PICO: " + String(picoAPico) + "\n";
-  s += "Promedio (DC): " + String(promedio) + "\n\n";
+  s += "Promedio (DC): " + String(promedio) + "\n";
+  s += "DO (2do mic) ahora: ";
+  s += (digitalRead(MIC_DO_PIN) == HIGH ? "HIGH" : "LOW");
+  s += " | flancos ultima ventana: " + String(ultimosFlancosDO) + "\n\n";
 
   if (picoAPico < 20) {
     s += "=> Senal MUY DEBIL o nula. El sensor casi no esta captando.";
@@ -847,6 +912,10 @@ String armarAudio() {
   s += "Base ambiente (aprendida): " + String(p2pBase, 1) + "\n";
   int umbralGolpe = max((int)(p2pBase * FACTOR_GOLPE), GOLPE_MINIMO);
   s += "Golpe a partir de: " + String(umbralGolpe) + "\n";
+  s += "Fuente: " + fuenteGolpeTexto() + "\n";
+  s += "DO (2do mic): " + String(ultimosFlancosDO) + " flancos";
+  if (ultimosFlancosDO > FLANCOS_DO_MAXIMO) s += " (ruido: pin sin conectar?)";
+  s += "\n";
   s += "Luces ahora: ";
   s += (ultimoBrillo > 0 ? "PRENDIDAS" : "APAGADAS");
   s += "\n";

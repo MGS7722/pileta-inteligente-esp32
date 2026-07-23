@@ -22,7 +22,8 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 | GPIO17 | Luces | LEDs ROJOS (los 2, cada uno con 220Ω) |
 | GPIO18 | Luces | LEDs AZULES (los 2, cada uno con 220Ω) |
 | GPIO19 | Luces | LEDs BLANCOS (los 2, cada uno con 220Ω) |
-| GPIO34 | Luces | Sensor de sonido — salida analógica (AO) |
+| GPIO34 | Luces | Sensor de sonido 1 — salida analógica (AO) |
+| GPIO35 | Luces | Sensor de sonido 2 — salida digital (DO, golpes por hardware) |
 | GPIO13 | Cobertor | L298N — IN1 (motor A) |
 | GPIO25 | Cobertor | L298N — IN2 (motor A) |
 | GPIO27 | Cobertor | L298N — ENA (PWM motor A) |
@@ -64,10 +65,15 @@ Módulo relé
 ## 2️⃣ Sistema Luces disco (8 LEDs = 4 colores × 2 lados)
 
 ```
-Sensor de sonido
-   VCC ──── 3.3V   (importante: 3.3V, NO 5V)
+Sensor de sonido 1 (volumen, canal analógico)
+   VCC ──── VIN (5V)  (el módulo pide 4-6V; su AO es de nivel bajo y es segura)
    GND ──── GND
-   AO  ──── GPIO34  (salida ANALÓGICA, no la digital DO)
+   AO  ──── GPIO34    (salida ANALÓGICA; el DO de este módulo queda libre)
+
+Sensor de sonido 2 (golpes por hardware)  ⚠️ a 3.3V, NUNCA a 5V
+   VCC ──── 3.3V
+   GND ──── GND
+   DO  ──── GPIO35    (salida DIGITAL; el AO de este módulo queda libre)
 
 LEDs (por cada color, 2 LEDs: uno de cada lado de la pileta)
    GPIO16 ──[220Ω]──►|── GND     (LED verde  lado A)

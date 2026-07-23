@@ -14,7 +14,7 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | Sensor temperatura DS18B20 | 2 | **S1** | Se usa 1 |
 | Módulo relé 1 canal 5V 10A | 2 | **S1** | Se usa 1 (prende el calentador) |
 | Cartucho calefactor 12V | 2 | **S1** | Se usa 1 |
-| Módulo sensor de sonido | 2 | **S2** | Se usa 1 |
+| Módulo sensor de sonido KY-037 | 2 | **S2** | Se usan LOS DOS: uno por AO (volumen, a 5V) y otro por DO (golpes, a 3.3V) |
 | LEDs 5mm (pack x100) | 1 | **S2** | Se usan 8: 4 colores × 2 lados (verde, rojo, azul, blanco) |
 | Resistencias 220Ω (pack x50) | 1 | **S2** | 8, una por cada LED de las luces |
 | Driver doble puente H L298N | 2 | **S3** | Se usa 1 (mueve los 2 motores del cobertor) |
@@ -47,7 +47,8 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | GPIO17 | S2 | LED 2 |
 | GPIO18 | S2 | LED 3 |
 | GPIO19 | S2 | LED 4 |
-| GPIO34 | S2 | Sensor de sonido |
+| GPIO34 | S2 | Sensor de sonido 1 (AO) |
+| GPIO35 | S2 | Sensor de sonido 2 (DO) |
 
 ### Usados por el cobertor (Sistema 3)
 
@@ -65,4 +66,4 @@ en **`CONEXIONES.md`**:
 | GPIO23 | Fin de carrera "cerrado" (pull-up interno) |
 | GPIO5  | Fin de carrera "abierto" (pull-up interno) |
 
-Quedan libres de sobra: GPIO36, GPIO39 y más.
+Quedan libres: GPIO36, GPIO39 y más.

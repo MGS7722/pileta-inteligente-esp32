@@ -127,6 +127,13 @@ Perillas disponibles en el código, por si hiciera falta afinar:
 > 💡 Para ver los números en vivo: mandá `/audio` con música sonando. Muestra el
 > volumen actual, la base aprendida y a partir de qué valor se dispara el golpe.
 
+**Detección bicanal:** además del micrófono analógico (AO), un **segundo módulo** de
+sonido conectado por su salida **DO** al GPIO35 actúa como detector de golpes por
+hardware: su potenciómetro fija el umbral y el LED de la placa muestra en vivo cuándo
+dispara. Con `/sonido_mixto` (default), `/sonido_ao` y `/sonido_do` se elige qué
+canal comanda los golpes (queda guardado). La guía de calibración está en
+**`PROTOCOLO-TALLER.md`**.
+
 ---
 
 ## 📲 Comandos de Telegram
@@ -153,6 +160,7 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/status` — estado general
 - `/temp` — temperatura y calentador
 - `/audio` — datos del sonido
+- `/sonido_mixto` / `/sonido_ao` / `/sonido_do` — elegir la fuente de golpes
 - `/ip` — IP del ESP32
 
 ---

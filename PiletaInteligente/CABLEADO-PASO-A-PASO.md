@@ -67,7 +67,9 @@ El módulo relé tiene 3 pines de control: **VCC, GND, IN**.
 El módulo de sonido tiene 3 pines: **VCC (o +), GND (o G), AO** (salida analógica).
 ⚠️ Si tiene un 4º pin **DO**, ese NO se usa.
 
-17. **Cable** → del pin **VCC/+** del sensor → al **riel 3.3V**. *(a 3.3V, no a 5V)*
+17. **Cable** → del pin **VCC/+** del sensor → al pin **VIN (5V)** del ESP32.
+    *(este módulo pide 4-6V según su especificación; su salida AO es de nivel bajo
+    y no daña al GPIO34 — verificado con /diag: el Máximo debe quedar < 3000)*
 18. **Cable** → del pin **GND/G** del sensor → al **riel GND**.
 19. **Cable** → del pin **AO** del sensor → al pin **GPIO34** del ESP32.
 
@@ -147,6 +149,19 @@ Cada fin de carrera es un interruptor con 2 patas. No importa el orden de las pa
 > No llevan resistencia: el ESP32 usa su resistencia interna (ya está en el código).
 
 ---
+
+## PASO 7-BIS — Segundo sensor de sonido (detector de golpes por hardware)
+
+Es el módulo de sonido de repuesto (KY-037). ⚠️ Este va a **3.3V, NUNCA a 5V**
+(su salida DO llega al ESP32 y más de 3.3V lo dañaría).
+
+52a. **Cable** → del pin **VCC/+** del módulo 2 → al **riel 3.3V**.
+52b. **Cable** → del pin **GND/G** del módulo 2 → al **riel GND**.
+52c. **Cable** → del pin **DO** del módulo 2 → al pin **GPIO35** del ESP32.
+     *(el pin AO del módulo 2 queda SIN conectar)*
+
+> El potenciómetro de ESTE módulo sí importa: fija el umbral del detector.
+> Cómo calibrarlo está en `PROTOCOLO-TALLER.md`.
 
 ## PASO 8 — Alimentar el ESP32
 
