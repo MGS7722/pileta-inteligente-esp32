@@ -110,6 +110,15 @@ hace es cambiar el modo. Después, el resto del código (el bloque del calentado
 las luces) **actúa según el modo** en el que estén. Por eso es fácil de seguir: los
 comandos configuran, y los bloques ejecutan.
 
+### Ajustar el efecto de las luces
+
+En la sección de ajustes de luces está la constante **`BRILLO_MINIMO`**, que define
+cuánto llegan a oscurecerse con la música:
+
+- `0` → se apagan del todo en los golpes (efecto más marcado).
+- `40`–`80` → nunca se apagan del todo, sólo bajan de intensidad (más suave, la pileta
+  queda siempre iluminada).
+
 ---
 
 ## 📲 Comandos de Telegram
