@@ -9,8 +9,10 @@
 //                        Arranca APAGADO; se activa desde Telegram
 //                        (automático con histéresis, o forzado ON).
 //     2) LUCES DISCO  -> Sensor de sonido + 8 LEDs (4 colores x 2
-//                        lados) que bailan al ritmo de la música.
-//                        Arrancan APAGADAS; se activan desde Telegram.
+//                        lados). En modo AUTO quedan prendidas y la
+//                        música las va apagando al ritmo (efecto en
+//                        negativo). Arrancan APAGADAS; se activan
+//                        desde Telegram.
 //     3) COBERTOR     -> 2 motores por L298N + 2 fines de carrera.
 //                        Abre/cierra desde Telegram; frena solo al
 //                        llegar al tope.
@@ -106,6 +108,12 @@ const int BANDA_AGUDOS_MAX = 6000;
 // Si graves > agudos * UMBRAL => predomina el bajo (Música A)
 const float  UMBRAL_CLASIFICACION = 1.3;
 const double UMBRAL_SILENCIO       = 100.0;  // Energía mínima para considerar que hay sonido
+
+// Efecto de las luces: están PRENDIDAS y la música las va APAGANDO al ritmo.
+// BRILLO_MINIMO = qué tan oscuras pueden llegar a ponerse con la música.
+//   0   = se apagan del todo en los golpes (efecto más marcado)
+//   40-80 = nunca se apagan del todo, sólo bajan (más suave y siempre iluminado)
+const int BRILLO_MINIMO = 0;
 
 // ============================================================
 //   AJUSTES DEL COBERTOR
@@ -396,7 +404,11 @@ void actualizarLucesSonido() {
   }
   volumen /= (SAMPLES / 2);
 
-  int brillo = constrain(map((long)volumen, 0, 500, 0, 255), 0, 255);
+  int intensidadSonido = constrain(map((long)volumen, 0, 500, 0, 255), 0, 255);
+
+  // Efecto en negativo: las luces arrancan prendidas (255) y cuanto MÁS fuerte
+  // suena la música, MÁS se apagan.
+  int brillo = constrain(255 - intensidadSonido, BRILLO_MINIMO, 255);
 
   ultimoVolumen = volumen;
   ultimoBrillo  = brillo;
@@ -406,13 +418,13 @@ void actualizarLucesSonido() {
   switch (tipoMusicaActual) {
 
     case MUSICA_A: {
-      // Graves: los 4 colores laten juntos.
+      // Graves: los 4 colores se apagan juntos con cada golpe del bajo.
       for (int i = 0; i < 4; i++) analogWrite(colores[i], brillo);
       break;
     }
 
     case MUSICA_B: {
-      // Agudos/voz: barrido secuencial de un color a la vez.
+      // Agudos/voz: una "sombra" recorre los colores (todos prendidos menos uno).
       static int posicion = 0;
       static unsigned long ultimoPaso = 0;
       unsigned long ahora = millis();
@@ -423,15 +435,15 @@ void actualizarLucesSonido() {
       }
 
       for (int i = 0; i < 4; i++) {
-        analogWrite(colores[i], (i == posicion) ? brillo : 0);
+        analogWrite(colores[i], (i == posicion) ? brillo : 255);
       }
       break;
     }
 
     case SIN_SONIDO:
     default: {
-      // Sin música: se apagan y esperan a que vuelva a sonar algo.
-      apagarTodasLasLuces();
+      // Sin música: quedan todas prendidas fijas.
+      prenderTodasLasLuces();
       break;
     }
   }
@@ -647,7 +659,7 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   // --- Luces ---
   else if (text == "/luces_auto" || text == "/auto") {
     modoLuces = LUCES_AUTO;
-    bot.sendMessage(chat_id, "Luces en AUTO: bailan con la música (si no hay música, quedan apagadas).", "");
+    bot.sendMessage(chat_id, "Luces en AUTO: quedan prendidas y se apagan al ritmo de la música.", "");
   }
   else if (text == "/luces_on") {
     modoLuces = LUCES_ON;
@@ -730,7 +742,7 @@ String armarAyuda(String from_name) {
   String s = "Hola, " + from_name + " 👋\n";
   s += "Control de la Pileta Inteligente.\n\n";
   s += "LUCES:\n";
-  s += "/luces_auto - bailan con la música\n";
+  s += "/luces_auto - se apagan al ritmo de la música\n";
   s += "/luces_on - prender todas fijas\n";
   s += "/luces_off - apagar todas\n\n";
   s += "CALENTADOR:\n";
