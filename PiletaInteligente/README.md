@@ -110,14 +110,24 @@ hace es cambiar el modo. Después, el resto del código (el bloque del calentado
 las luces) **actúa según el modo** en el que estén. Por eso es fácil de seguir: los
 comandos configuran, y los bloques ejecutan.
 
-### Ajustar el efecto de las luces
+### Ajustar la sensibilidad de las luces
 
-En la sección de ajustes de luces está la constante **`BRILLO_MINIMO`**, que define
-cuánto llegan a oscurecerse con la música:
+Las luces trabajan **solo prendidas o apagadas** (nunca a media luz), para no forzar los
+LEDs y para no meterle ruido eléctrico al micrófono.
 
-- `0` → se apagan del todo en los golpes (efecto más marcado).
-- `40`–`80` → nunca se apagan del todo, sólo bajan de intensidad (más suave, la pileta
-  queda siempre iluminada).
+En la sección de ajustes están estas constantes, **calibradas con mediciones reales** de
+este equipo (con el comando `/diag`):
+
+| Constante | Valor | Qué hace |
+|---|---|---|
+| `RUIDO_DE_FONDO` | 30 | Por debajo de este volumen se considera silencio |
+| `UMBRAL_APAGADO` | 50 | A partir de este volumen las luces se apagan |
+
+**Si las luces reaccionan poco** → bajá `UMBRAL_APAGADO` (ej. 35).
+**Si reaccionan a cualquier ruido** → subilo (ej. 70).
+
+> 💡 Para calibrar: mandá `/audio` con música sonando y mirá el valor de **VOLUMEN
+> (pico a pico)**. Poné `UMBRAL_APAGADO` un poco por debajo de ese número.
 
 ---
 

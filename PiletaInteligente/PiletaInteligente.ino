@@ -119,11 +119,14 @@ const float UMBRAL_CLASIFICACION = 1.3;
 const int RUIDO_DE_FONDO = 30;    // Por debajo de esto se considera silencio
 const int SONIDO_MAXIMO  = 150;   // A este nivel el efecto llega al máximo
 
-// Efecto de las luces: están PRENDIDAS y la música las va APAGANDO al ritmo.
-// BRILLO_MINIMO = qué tan oscuras pueden llegar a ponerse con la música.
-//   0   = se apagan del todo en los golpes (efecto más marcado)
-//   40-80 = nunca se apagan del todo, sólo bajan (más suave y siempre iluminado)
-const int BRILLO_MINIMO = 0;
+// Las luces trabajan SOLO en dos estados: prendidas o apagadas (nunca a media
+// luz), para no forzar los LEDs y para no generar el ruido eléctrico del PWM,
+// que ensucia la lectura del micrófono.
+//
+// UMBRAL_APAGADO = a partir de qué volumen (pico a pico) se apagan.
+//   Más BAJO  => se apagan con cualquier sonido (más sensible).
+//   Más ALTO  => solo se apagan con los golpes fuertes.
+const int UMBRAL_APAGADO = 50;
 
 // ============================================================
 //   AJUSTES DEL COBERTOR
@@ -433,31 +436,23 @@ void actualizarLucesSegunModo() {
 }
 
 // Modo AUTO: patrón de luces según el tipo de música detectado.
+// Las luces son SIEMPRE prendido o apagado, nunca a media luz.
 void actualizarLucesSonido() {
-  // Cuánto sonido hay, en escala 0-255, usando el pico a pico medido y los
-  // umbrales calibrados para este micrófono.
-  int intensidadSonido = constrain(
-      map(ultimoPicoAPico, RUIDO_DE_FONDO, SONIDO_MAXIMO, 0, 255), 0, 255);
-
-  // Suavizado: promedia con el valor anterior para que las luces no tiemblen
-  // de forma errática con cada pico suelto.
-  static int intensidadSuavizada = 0;
-  intensidadSuavizada = (intensidadSuavizada + intensidadSonido * 2) / 3;
-
-  // Efecto en negativo: las luces arrancan prendidas (255) y cuanto MÁS fuerte
-  // suena la música, MÁS se apagan.
-  int brillo = constrain(255 - intensidadSuavizada, BRILLO_MINIMO, 255);
+  // ¿El sonido llegó al nivel que apaga las luces?
+  bool hayGolpe = (ultimoPicoAPico >= UMBRAL_APAGADO);
 
   ultimoVolumen = ultimoPicoAPico;
-  ultimoBrillo  = brillo;
+  ultimoBrillo  = hayGolpe ? 0 : 255;
 
   int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
 
   switch (tipoMusicaActual) {
 
     case MUSICA_A: {
-      // Graves: los 4 colores se apagan juntos con cada golpe del bajo.
-      for (int i = 0; i < 4; i++) analogWrite(colores[i], brillo);
+      // Graves: los 4 colores se apagan de golpe con cada beat del bajo.
+      for (int i = 0; i < 4; i++) {
+        digitalWrite(colores[i], hayGolpe ? LOW : HIGH);
+      }
       break;
     }
 
@@ -473,7 +468,7 @@ void actualizarLucesSonido() {
       }
 
       for (int i = 0; i < 4; i++) {
-        analogWrite(colores[i], (i == posicion) ? brillo : 255);
+        digitalWrite(colores[i], (i == posicion) ? LOW : HIGH);
       }
       break;
     }
@@ -488,17 +483,17 @@ void actualizarLucesSonido() {
 }
 
 void prenderTodasLasLuces() {
-  analogWrite(LED_VERDE,  255);
-  analogWrite(LED_ROJO,   255);
-  analogWrite(LED_AZUL,   255);
-  analogWrite(LED_BLANCO, 255);
+  digitalWrite(LED_VERDE,  HIGH);
+  digitalWrite(LED_ROJO,   HIGH);
+  digitalWrite(LED_AZUL,   HIGH);
+  digitalWrite(LED_BLANCO, HIGH);
 }
 
 void apagarTodasLasLuces() {
-  analogWrite(LED_VERDE,  0);
-  analogWrite(LED_ROJO,   0);
-  analogWrite(LED_AZUL,   0);
-  analogWrite(LED_BLANCO, 0);
+  digitalWrite(LED_VERDE,  LOW);
+  digitalWrite(LED_ROJO,   LOW);
+  digitalWrite(LED_AZUL,   LOW);
+  digitalWrite(LED_BLANCO, LOW);
 }
 
 // ============================================================
@@ -884,8 +879,10 @@ String armarAudio() {
   s += "Música: " + tipoMusicaTexto() + "\n";
   s += "VOLUMEN (pico a pico): " + String(ultimoPicoAPico) + "\n";
   s += "  (silencio<" + String(RUIDO_DE_FONDO);
-  s += " / maximo=" + String(SONIDO_MAXIMO) + ")\n";
-  s += "Brillo luces: " + String(ultimoBrillo) + "/255\n\n";
+  s += " / se apagan en " + String(UMBRAL_APAGADO) + ")\n";
+  s += "Luces ahora: ";
+  s += (ultimoBrillo > 0 ? "PRENDIDAS" : "APAGADAS");
+  s += "\n\n";
   s += "Graves: " + String(ultimaEnergiaGraves, 1) + "\n";
   s += "Agudos: " + String(ultimaEnergiaAgudos, 1) + "\n";
   s += "Modo luces: " + modoLucesTexto();
