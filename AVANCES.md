@@ -74,6 +74,16 @@
   (plan LEGO en `docs/PLAN-LUCES-ADAPTATIVAS.md`, ejecutado por Sonnet, auditado por Fable)
 - Mejora de hardware pendiente de verificar: alimentar el sensor de sonido con 5V (pin VIN) en
   vez de 3.3V — el módulo pide 4-6V; verificar con `/diag` que el Máximo quede lejos de 4095
+- **Auditoría de raíz** (pedida por Mariano: "algo redundante que no sirve"): confirmado — la FFT
+  era complejidad muerta (solo clasificaba graves/agudos, y con 14-30 mV esa clasificación es
+  ruido). Además: la ventana de 12,8 ms perdía los beats (evidencia: /audio=16 vs /diag=40 el
+  mismo instante) y faltaba `client.setTimeout` (Telegram congelaba el show 1-2 s por consulta)
+- **Luces v3** (plan `docs/PLAN-LUCES-V3-SIN-FFT.md`): FFT eliminada por completo (~80 líneas,
+  2 KB de RAM y la librería arduinoFFT fuera del proyecto); medición por pico a pico con ventana
+  de ~35 ms; efectos sin espectro: sombra rotante con música + strobe en cada golpe;
+  `client.setTimeout(2000)` recuperado; nuevo comando `/temperatura N` (guardado en NVS,
+  sobrevive reinicios — estaba prometido en PROYECTO.md y faltaba)
+- Los compañeros ahora instalan **5 librerías** (arduinoFFT ya no hace falta)
 
 #### Atribución por modelo (sesión 2026-07-23)
 - **Opus 4.8**: /diag, pico a pico + DC removal, luces binarias, efecto en negativo (commits
