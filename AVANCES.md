@@ -84,6 +84,15 @@
   `client.setTimeout(2000)` recuperado; nuevo comando `/temperatura N` (guardado en NVS,
   sobrevive reinicios — estaba prometido en PROYECTO.md y faltaba)
 - Los compañeros ahora instalan **5 librerías** (arduinoFFT ya no hace falta)
+- **Hardware identificado con exactitud** (publicaciones de compra): sensor **KY-037** (LM393,
+  especificación 4–6V, DOS unidades compradas) y pack de 100 LEDs 5mm difusos (Vf 1.7–3.8V)
+- **Luces v4 — detección BICANAL** (plan `docs/PLAN-LUCES-V4-BICANAL.md`): módulo 1 por AO a
+  5V (VIN) con la base adaptativa + módulo 2 (el de repuesto) por DO a 3.3V en GPIO35 como
+  detector de golpes por hardware (umbral con su potenciómetro, LED de placa como feedback).
+  Fusión con fuente seleccionable (/sonido_mixto | /sonido_ao | /sonido_do, guardada en NVS)
+  y filtro anti-pin-flotante. Redundancia para que la primera prueba en el taller funcione
+- **Nuevo `PROTOCOLO-TALLER.md`**: checklist paso a paso para la visita al taller (cables,
+  verificación /diag, calibración del potenciómetro a ojo, prueba de fuego y plan B)
 
 #### Atribución por modelo (sesión 2026-07-23)
 - **Opus 4.8**: /diag, pico a pico + DC removal, luces binarias, efecto en negativo (commits
