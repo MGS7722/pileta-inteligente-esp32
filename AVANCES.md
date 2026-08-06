@@ -10,7 +10,8 @@
 - [x] Control por Telegram (auto / forzar ON / forzar OFF)
 - [x] Fuente de 12V y cartucho calefactor conectados por el relé (2026-08-06)
 - [x] Polaridad del relé corregida: el módulo es ACTIVO-ALTO (verificado en hardware)
-- [ ] Probar el ciclo completo con el calentador real (encendido, corte por objetivo)
+- [x] **Ciclo completo probado en modo AUTO**: calentó hasta 26 °C y cortó solo (2026-08-06)
+- [ ] Revisar la histéresis: 5 °C es mucha oscilación para una pileta (¿bajarla a 2 °C?)
 
 ## Sistema 2 — Luces al ritmo de la música
 
@@ -130,11 +131,25 @@ alfa de subida de la base 0.02 → **0.008**.
 2. 🔴 **Un DS18B20 en cortocircuito** hizo hervir dos ESP32 hasta dejarlos sin arrancar.
    Ambas placas se recuperaron con un corte total de alimentación (latch-up, no daño
    permanente). Sensor reemplazado por el de repuesto.
-3. 🟠 **El programa se congela hasta 3 segundos seguidos** (medido en la traza: huecos de
-   3.045 ms). Culpables: `requestTemperatures()` bloquea 750 ms a 12 bits, y `getUpdates()`
-   de Telegram otro 1-2 s cada 2,5 s. Es lo que hace que el LCD y las luces vayan a
-   tirones. **Pendiente de arreglar** con `setWaitForConversion(false)` y sacando Telegram
-   del camino del show.
+3. ✅ **El programa se congelaba hasta 3 segundos seguidos** — RESUELTO. Culpables:
+   `requestTemperatures()` bloqueaba 750 ms a 12 bits, y `getUpdates()` de Telegram otros
+   ~3 s cada 2,5 s (el saludo TLS de cada conexión nueva). Era lo que hacía que el LCD y
+   las luces fueran a tirones. Arreglado en dos pasos, cada uno medido con `/trace`:
+   - **Sensor no bloqueante**: `setWaitForConversion(false)` + lectura en dos fases (se
+     pide la conversión y el valor se recoge varias vueltas después). Eliminó los huecos
+     de 750 ms.
+   - **Telegram en el núcleo 0**: tarea propia con `xTaskCreatePinnedToCore` (8 KB de
+     pila, `vTaskDelay` obligatorio para no despertar al watchdog), en el mismo núcleo
+     donde el ESP32 maneja el WiFi. `loop()` queda libre en el núcleo 1. Como `bot` ahora
+     pertenece a esa tarea, el aviso del cobertor pasa por un buzón en vez de enviarse
+     desde el loop: dos núcleos por la misma conexión TLS serían un cuelgue seguro.
+
+   | Medición (mismo método) | Antes | Después |
+   |---|---|---|
+   | Hueco máximo del loop | 3.301 ms | **192 ms** |
+   | Hueco promedio | 856 ms | **68 ms** |
+   | Huecos > 1,5 s | 21 de 70 | **0 de 588** |
+   | Mediciones en ~60 s | 71 | **589** |
 4. 🟠 **La base adaptativa se infla hasta cegar al sistema**: con música sostenida llegó a
    147 y dejó el umbral en 192, declarando "sin música" con música sonando. Bajar el alfa
    lo mitiga pero no lo resuelve — es estructural del filtro exponencial. **Pendiente**:

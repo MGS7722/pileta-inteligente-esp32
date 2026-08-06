@@ -217,10 +217,32 @@ EstadoCobertor estadoCobertor = COB_PARADO;
 unsigned long inicioMovimientoCobertor = 0;
 String chatCobertor = "";   // A quién avisarle por Telegram cuando termina el movimiento
 
+// --- Lectura NO BLOQUEANTE del sensor de temperatura ---
+// Con el modo por defecto de la librería, requestTemperatures() se queda esperando
+// los 750 ms que tarda el DS18B20 en convertir a 12 bits, y durante ese rato el
+// programa entero queda congelado: el LCD no se refresca y las luces se clavan.
+// Acá la lectura se parte en dos fases —se pide la conversión, el loop sigue
+// trabajando, y el valor se recoge cuando el sensor terminó—, así el loop nunca
+// se detiene por el sensor.
+const unsigned long CONVERSION_DS18B20_MS = 750;   // 12 bits: 750 ms (hoja de datos)
+bool conversionEnCurso = false;
+unsigned long inicioConversion = 0;
+
 // --- Tiempos y conexión ---
 unsigned long ultimoTiempoTemp    = 0;
 unsigned long ultimoCheckTelegram = 0;
 bool telegramListo = false;
+
+// --- Buzón de avisos hacia Telegram ---
+// El aviso de "cobertor abierto/cerrado" nace en el loop (núcleo 1), pero el
+// objeto `bot` lo usa SOLAMENTE la tarea de Telegram (núcleo 0): dos núcleos
+// escribiendo por la misma conexión segura al mismo tiempo es un cuelgue seguro.
+// Así que el loop deja el mensaje acá y la tarea lo despacha cuando puede.
+// El flag se levanta DESPUÉS de escribir el texto y se baja DESPUÉS de leerlo,
+// para que la tarea nunca lea un mensaje a medio escribir.
+volatile bool avisoPendiente = false;
+String avisoTexto;
+String avisoChat;
 
 // ============================================================
 //   SETUP
@@ -251,6 +273,7 @@ void setup() {
   // Sensor de temperatura
   sensores.begin();
   sensores.setResolution(12);
+  sensores.setWaitForConversion(false);   // no bloquear el loop mientras convierte
 
   // Pantalla
   lcd.init();
@@ -271,6 +294,19 @@ void setup() {
   // WiFi + Telegram
   conectarWiFiTelegram();
 
+  // Telegram queda corriendo en el NÚCLEO 0, en su propia tarea: sus esperas de
+  // varios segundos ya no frenan las luces ni la pantalla (ver tareaTelegram).
+  // 8 KB de pila porque la conexión segura necesita bastante espacio.
+  xTaskCreatePinnedToCore(
+    tareaTelegram,      // función
+    "telegram",         // nombre (para depurar)
+    8192,               // pila en bytes
+    NULL,               // parámetros
+    1,                  // prioridad
+    NULL,               // handle (no hace falta guardarlo)
+    0                   // núcleo 0 — el mismo donde el ESP32 maneja el WiFi
+  );
+
   Serial.println("Sistema listo.");
   Serial.println("Calentador: OFF | Luces: OFF | Cobertor: parado (todo se maneja desde Telegram).");
 }
@@ -287,22 +323,37 @@ void loop() {
   // 2) Cobertor → máquina de estados no bloqueante (frena al llegar al tope).
   actualizarCobertor();
 
-  // 3) Temperatura + LCD → cada INTERVALO_TEMP.
-  if (millis() - ultimoTiempoTemp >= INTERVALO_TEMP) {
-    ultimoTiempoTemp = millis();
-    actualizarTemperatura();
-  }
+  // 3) Temperatura + LCD → lectura en dos fases, sin bloquear: la propia función
+  //    lleva sus tiempos (pide la conversión y recoge el valor cuando está listo).
+  actualizarTemperatura();
 
-  // 4) Telegram → cada INTERVALO_TELEGRAM.
-  procesarTelegram();
+  // Telegram NO se atiende acá: vive en su propia tarea, en el otro núcleo.
+  // Ver tareaTelegram(). Así sus esperas de varios segundos no frenan el show.
 }
 
 // ============================================================
 //   CALENTADOR
 // ============================================================
 
+// Lectura en dos fases para no frenar el loop (ver CONVERSION_DS18B20_MS):
+// primero se le pide la conversión al sensor, y recién cuando terminó —varias
+// vueltas de loop después— se recoge el valor y se actúa sobre el calentador.
 void actualizarTemperatura() {
-  sensores.requestTemperatures();
+  // Fase 1: ¿toca pedir una lectura nueva?
+  if (!conversionEnCurso) {
+    if (millis() - ultimoTiempoTemp < INTERVALO_TEMP) return;
+    sensores.requestTemperatures();   // vuelve enseguida: setWaitForConversion(false)
+    conversionEnCurso = true;
+    inicioConversion = millis();
+    return;
+  }
+
+  // Fase 2: el sensor sigue convirtiendo, todavía no hay nada que leer.
+  if (millis() - inicioConversion < CONVERSION_DS18B20_MS) return;
+
+  conversionEnCurso = false;
+  ultimoTiempoTemp  = millis();
+
   float temp = sensores.getTempCByIndex(0);
 
   // Si el sensor está desconectado, apagamos el calentador SIEMPRE
@@ -648,10 +699,13 @@ void actualizarCobertor() {
   }
 }
 
-// Avisa por Telegram a quien pidió el movimiento (si hay alguien y hay WiFi).
+// Deja el aviso en el buzón para que lo mande la tarea de Telegram. No envía acá
+// mismo porque esto corre en el loop (núcleo 1) y `bot` es de la otra tarea.
 void avisarCobertor(String msg) {
-  if (chatCobertor.length() > 0 && WiFi.status() == WL_CONNECTED) {
-    bot.sendMessage(chatCobertor, msg, "");
+  if (chatCobertor.length() > 0 && !avisoPendiente) {
+    avisoChat  = chatCobertor;
+    avisoTexto = msg;
+    avisoPendiente = true;   // último: recién ahora el mensaje está completo
   }
   chatCobertor = "";
 }
@@ -688,6 +742,40 @@ void conectarWiFiTelegram() {
     telegramListo = false;
     Serial.println("No se pudo conectar a WiFi. El sistema sigue funcionando sin Telegram.");
   }
+}
+
+// ============================================================
+//   TAREA DE TELEGRAM — corre en el NÚCLEO 0, aparte del loop
+// ============================================================
+//
+// Consultar Telegram abre una conexión segura nueva cada vez, y ese saludo TLS
+// bloquea hasta 3 segundos. Medido con /trace el 2026-08-06: 21 de cada 70
+// mediciones tenían huecos de ~3000 ms, o sea que el programa pasaba más de la
+// mitad del tiempo congelado ahí — con el LCD sin refrescar y las luces clavadas.
+//
+// La solución es darle a Telegram su propio hilo, fijado al núcleo 0 (el mismo
+// donde el ESP32 maneja el WiFi), y dejar loop() corriendo libre en el núcleo 1
+// para el sonido, las luces, el cobertor y la pantalla. Ahora el bloqueo sigue
+// existiendo, pero le pasa a una tarea que no le importa esperar.
+//
+// El vTaskDelay NO es opcional: sin él la tarea nunca cede el CPU y el watchdog
+// del núcleo 0 reinicia la placa.
+void tareaTelegram(void *parametros) {
+  for (;;) {
+    procesarTelegram();
+    enviarAvisoPendiente();
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+}
+
+// Despacha el aviso que el loop haya dejado en el buzón (ver avisarCobertor).
+void enviarAvisoPendiente() {
+  if (!avisoPendiente) return;
+
+  if (WiFi.status() == WL_CONNECTED && telegramListo) {
+    bot.sendMessage(avisoChat, avisoTexto, "");
+  }
+  avisoPendiente = false;   // último: recién ahora el buzón queda libre
 }
 
 void procesarTelegram() {
