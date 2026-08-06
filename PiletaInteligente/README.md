@@ -195,6 +195,12 @@ Dos formas de resolverlo:
 
 ## 🚧 Pendiente
 
-- **Armar el cobertor en el hardware**: el código ya está listo (comandos y lógica de
-  "un motor tira / el otro suelto" + corte por fin de carrera). Falta montar el mecanismo
-  (motores + rodillo + cables + fines de carrera) y probarlo.
+Del cobertor ya está probado en hardware lo eléctrico: **los dos motores giran** con
+`/motor_a` y `/motor_b`, a la velocidad que fija `/velocidad`. Falta:
+
+- **Conectar los 2 fines de carrera** y verificar que corten el movimiento (con `/status`
+  se comprueba sin mover ningún motor: ver `CABLEADO-PASO-A-PASO.md`).
+- **Montar el mecanismo** (rodillo + cables + lona) y definir el sentido de giro de cada
+  motor; si alguno gira al revés, se invierten sus dos cables en el L298N.
+- **Tira WS2812**: reemplaza a los 8 LEDs, que están desconectados esperándola. Va con
+  fuente propia de 5V, nunca alimentada desde el ESP32; sólo se comparte el GND.

@@ -360,9 +360,12 @@ Por Telegram:
   y que la fuente SLAVE esté realmente dando 8V.
 - **Gira el que no era** → tenés cruzados los cables de señal: IN1/IN2/ENA son del motor A,
   IN3/IN4/ENB son del motor B.
-- **Gira muy despacio o le cuesta arrancar** → es normal: el programa los mueve al 70% de
-  velocidad y el L298N se come ~2V. Si con la lona puesta no llega a arrancar, subí
-  `VELOCIDAD_COBERTOR` de 180 a 255 en el `.ino`.
+- **Gira muy despacio o le cuesta arrancar** → el programa los mueve al **45%** de velocidad
+  y el L298N se come ~2V. Se ajusta desde Telegram con **`/velocidad 60`** (en %, de 20 a
+  100) y queda guardado en el ESP32: no hay que recompilar nada. Con la lona puesta hace
+  falta más fuerza, así que puede que tengas que subirlo.
+- **Zumba pero no gira** → la velocidad quedó demasiado baja: por debajo del 20% el motor no
+  vence su propio rozamiento. Subila con `/velocidad`.
 - **Gira para el lado equivocado** → invertí **los dos cables de ese motor** en el L298N
   (OUT1↔OUT2 para el A, OUT3↔OUT4 para el B). No toques el código.
 
