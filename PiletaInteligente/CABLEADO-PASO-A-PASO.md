@@ -232,38 +232,50 @@ en la placa y **el del medio siempre es GND**:
         ┌─────────┬─────────┬─────────┐
         │  +12V   │   GND   │   +5V   │   ← rotulado en la placa
         └────┬────┴────┬────┴────┬────┘
-             │         │         │
              │         │         └──  NO SE CONECTA NADA (es una SALIDA)
              │         │
-             │         └──  DOS cables juntos en este mismo tornillo:
-             │                 1) el − (negro) de la fuente SLAVE
-             │                 2) un cable al riel GND de la protoboard
+             │         └──  el − (negro) de la fuente SLAVE
              │
              └──  el + (rojo) de la fuente SLAVE (8V)
 ```
 
-**Son sólo 2 tornillos con cable, y en uno de ellos entran 2 cables.** Por eso la cuenta no
-te cerraba: el tercer tornillo (+5V) queda vacío.
+**Al módulo llegan sólo 2 cables**: el tercer tornillo (+5V) queda vacío. Por eso la cuenta de
+"3 tornillos = 3 cables" no cierra.
 
 29. **Cable** → **+ (rojo)** de la fuente SLAVE (8V) → al tornillo **+12V**.
     *(el tornillo se llama "+12V" pero acepta de 7 a 12V: le ponemos 8V)*
 30. **Cable** → **− (negro)** de la fuente SLAVE (8V) → al tornillo **GND**.
-31. **Cable** → del **mismo tornillo GND** (junto al anterior) → al **riel GND** de la
-    protoboard. *(este es el GND común con el ESP32: sin él, nada funciona)*
+31. **Cable** → del **borne − (negro) de la fuente SLAVE** — el mismo borne del cable
+    anterior — → al **riel GND** de la protoboard.
 
-> 💡 **Cómo entran dos cables en un tornillo:** pelá 8-10 mm de cada uno, juntá las dos puntas
-> y torcelas como si fueran un solo cable, y recién ahí apretá el tornillo. Después tirá suave
-> de cada uno por separado para confirmar que ninguno quedó flojo.
+Este último cable es el **GND común** y es imprescindible: sin él los motores no arrancan.
 
-> **¿Por qué el GND tiene que ser común?** El ESP32 le manda señales de 3,3V al L298N. Para que
-> el módulo entienda "3,3 voltios", los dos tienen que estar midiendo desde el mismo cero. Sin
-> ese cable, el L298N no interpreta nada y los motores hacen cualquier cosa (o nada).
+> ### ⚠️ El cable 31 no es de alimentación: es el que hace que se entiendan
+> El ESP32 está alimentado por **USB** y el L298N por **la fuente**: cada uno tiene su propio
+> cero. Cuando el ESP32 manda una señal de 3,3V, la cuenta desde SU cero; si el L298N escucha
+> contando desde OTRO cero, no interpreta nada. El cable 31 une los dos ceros.
+>
+> ```
+>    ESP32 ──señal de 3,3V──► L298N        ¿desde qué cero mide cada uno?
+>      │                        │
+>      └── USB (cero A)         └── fuente (cero B)     ← sin unir: no funciona
+> ```
+>
+> **Los dos ceros se pueden unir en cualquiera de las dos puntas** — el tornillo GND del L298N
+> y el borne − de la fuente ya están unidos por el cable 30, así que da lo mismo de dónde
+> salga el cable 31. Sale del **borne de la fuente** porque ahí entran dos cables cómodos (el
+> poste tiene agujero pasante y capuchón a rosca); meter dos cables en el tornillito del
+> módulo es incómodo y quedan flojos.
+>
+> Si igual preferís sacarlo del módulo: pelá 8-10 mm de cada cable, torcé las dos puntas
+> juntas como si fueran una sola y ahí apretá el tornillo. Después tirá suave de cada uno para
+> confirmar que ninguno se salió.
 
-> 🚫 **No lleves el negativo de la fuente al riel de la protoboard y de ahí al L298N.** Parece
-> lo mismo, pero no lo es: así toda la corriente de los motores (más de 1A en cada arranque)
-> pasaría por el riel de la protoboard, que no está hecho para eso, y ese ruido se cuela en la
-> lectura del micrófono. La corriente de los motores va **directo de la fuente al módulo**; el
-> cable a la protoboard es sólo la referencia.
+> 🚫 **Lo que NO hay que hacer: llevar el negro de la fuente al riel de la protoboard y de ahí
+> al L298N.** Parece lo mismo, pero así toda la corriente de los motores (más de 1A en cada
+> arranque) pasaría por el riel de la protoboard, que no está hecho para eso, y ese ruido se
+> cuela en la lectura del micrófono. La corriente de los motores va **directo de la fuente al
+> módulo**; el cable 31 lleva sólo la referencia.
 
 > 🚫 **El tornillo +5V no se conecta a nada.** Es una salida que fabrica el propio módulo. Si lo
 > enchufás al 5V/VIN del ESP32 mientras el ESP32 está con el USB, quedan dos fuentes de 5V
@@ -376,6 +388,11 @@ conviene acoplar los motores al mecanismo.
 
 - [ ] ¿Los **GND de la lógica** están unidos? (ESP32, L298N, relé *lado control*, sensores)
       **El negativo de los 12V del calefactor NO** — ese circuito va aparte.
+- [ ] ¿Está el **cable 31** (el GND común entre el mundo del ESP32 y el de la fuente SLAVE)?
+      Es el que más se olvida y sin él los motores no arrancan.
+      **Con téster** (todo apagado, en modo continuidad 🔊): una punta en el pin **GND del
+      ESP32** y la otra en el **tornillo GND del L298N** → **tiene que pitar**. Si no pita,
+      falta ese cable o está flojo.
 - [ ] ¿La resistencia de **4.7kΩ** está entre GPIO4 y 3.3V?
 - [ ] ¿El sensor de sonido **1** está en **VIN (5V)** y el **2** en **3.3V**?
 - [ ] ¿Ningún cable en los pines **SD0, SD1, SD2, SD3, CMD, CLK** (GPIO6–11)? Son de la
