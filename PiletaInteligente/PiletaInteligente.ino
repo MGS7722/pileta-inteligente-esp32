@@ -284,6 +284,21 @@ unsigned long ultimoTiempoTemp    = 0;
 unsigned long ultimoCheckTelegram = 0;
 bool telegramListo = false;
 
+// Latido de la tarea de Telegram: ella lo actualiza en cada vuelta y el loop lo
+// mira desde el otro núcleo para saber si sigue viva.
+//
+// Pasó en el taller el 2026-08-06: el loop seguía corriendo —la pantalla y el
+// sensor andaban perfecto, sin un solo reinicio— pero la tarea de Telegram se
+// había quedado esperando una conexión que nunca llegó, y el bot no respondía
+// más. Desde afuera era invisible: la placa "parecía" sana. Con este latido, el
+// síntoma aparece en el Monitor Serie en vez de tener que adivinarlo.
+volatile unsigned long ultimoLatidoTelegram = 0;
+
+// Si el WiFi se cae, el core reintenta solo; pero si pasa demasiado tiempo sin
+// volver, conviene forzar una reconexión limpia en vez de esperar para siempre.
+const unsigned long REINTENTO_WIFI_MS = 20000;
+unsigned long ultimoIntentoWiFi = 0;
+
 // --- Buzón de avisos hacia Telegram ---
 // El aviso de "cobertor abierto/cerrado" nace en el loop (núcleo 1), pero el
 // objeto `bot` lo usa SOLAMENTE la tarea de Telegram (núcleo 0): dos núcleos
@@ -466,7 +481,15 @@ void actualizarTemperatura() {
   Serial.print(") | Luces: ");
   Serial.print(modoLucesTexto());
   Serial.print(" | Cobertor: ");
-  Serial.println(estadoCobertorTexto());
+  Serial.print(estadoCobertorTexto());
+
+  // Salud de la conexión. Si el número de "Telegram late hace" empieza a crecer
+  // sin parar, la tarea del otro núcleo se colgó aunque todo lo demás ande bien.
+  Serial.print(" | WiFi: ");
+  Serial.print(WiFi.status() == WL_CONNECTED ? "OK" : "CAIDO");
+  Serial.print(" | Telegram late hace ");
+  Serial.print((millis() - ultimoLatidoTelegram) / 1000);
+  Serial.println("s");
 }
 
 void prenderCalentador() {
@@ -867,6 +890,7 @@ void conectarWiFiTelegram() {
 // del núcleo 0 reinicia la placa.
 void tareaTelegram(void *parametros) {
   for (;;) {
+    ultimoLatidoTelegram = millis();   // "sigo viva" (lo lee el loop, ver actualizarTemperatura)
     procesarTelegram();
     enviarAvisoPendiente();
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -889,8 +913,16 @@ void procesarTelegram() {
   }
   ultimoCheckTelegram = millis();
 
+  // Sin WiFi no hay nada que consultar. El core reintenta conectarse solo, pero
+  // si no vuelve por su cuenta se fuerza una reconexión limpia cada tanto.
   if (WiFi.status() != WL_CONNECTED) {
     telegramListo = false;
+    if (millis() - ultimoIntentoWiFi > REINTENTO_WIFI_MS) {
+      ultimoIntentoWiFi = millis();
+      Serial.println("WiFi caido: reintentando conectar...");
+      WiFi.disconnect();
+      WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    }
     return;
   }
 

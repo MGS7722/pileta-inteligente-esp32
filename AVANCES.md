@@ -265,8 +265,29 @@ configurable desde Telegram para calibrarla en el taller sin recompilar. El valo
 bajó de 180/255 (70%) a **115/255 (45%)** y el mínimo aceptado es 20%: por debajo, el motor
 zumba y no vence su propio rozamiento.
 
+**🔴 La tarea de Telegram se colgó en pleno taller** (mismo día, después de varias pruebas de
+motores). Síntoma: el bot dejó de responder mientras **todo lo demás seguía perfecto**. El
+Monitor Serie lo demostró: el loop imprimía la temperatura cada 2,7 s, **cero reinicios**
+(`rst:` = 0), cero panics, cero watchdog, cero brownout. Al resetear la placa, Telegram
+entregó de golpe los comandos encolados (tres `/motor_a` seguidos, que movieron el motor).
+
+Causa: cada consulta a Telegram abre una conexión TLS nueva, y ese saludo puede quedarse
+esperando indefinidamente si la red se pone rara — la del taller es `UA-Alumnos`, una red
+institucional. `client.setTimeout(2000)` cubre las lecturas, **no** el establecimiento de la
+conexión. La tarea del núcleo 0 queda bloqueada y el loop del núcleo 1 sigue como si nada.
+
+Lo peor era que **el cuelgue es invisible desde afuera**: nada en el log decía que Telegram
+había dejado de latir. Se agregó:
+- **Latido de la tarea de Telegram** (`ultimoLatidoTelegram`), que la tarea actualiza en cada
+  vuelta y el loop publica en el Monitor Serie: `WiFi: OK | Telegram late hace 0s`. Si ese
+  número empieza a crecer sin parar, la tarea se colgó.
+- **Reconexión de WiFi forzada** cada 20 s mientras esté caído, en vez de confiar sólo en el
+  reintento automático del core.
+
 **Pendiente**: conectar los fines de carrera y verificar que corten; definir el sentido de
-giro de cada motor una vez montado el mecanismo.
+giro de cada motor una vez montado el mecanismo. **Decisión para Mariano**: si el latido se
+detiene (Telegram colgado), ¿el ESP32 debe reiniciarse solo para recuperar el bot? Recupera
+el control remoto sin intervención, pero un reinicio deja el calentador en OFF por diseño.
 
 #### Atribución por modelo (sesión 2026-08-06, parte 2)
 - **Opus 5**: auditoría del cableado, investigación en documentación oficial, reasignación de
