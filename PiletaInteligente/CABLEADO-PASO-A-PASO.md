@@ -43,12 +43,46 @@ no te podés equivocar. Cada línea es UN cable.
 
 ---
 
+## ⚡ Cómo se alimenta todo (leer antes de tocar la fuente)
+
+Hay **tres alimentaciones independientes**. No se mezclan entre sí:
+
+| Alimenta | A quién | Cuánto |
+|---|---|---|
+| **USB de la notebook** | El **ESP32** — y a través suyo el LCD, el lado de control del relé y los sensores, que consumen poquito | 5V |
+| **Fuente MASTER** | El **cartucho calefactor**, a través del relé | 12V |
+| **Fuente SLAVE** | El **L298N**, y de ahí los 2 motores del cobertor | ~8V |
+
+Lo **único** que se comparte es el **GND entre el ESP32 y el L298N**: es lo que les permite
+entenderse las señales. El circuito de 12V del calefactor no comparte nada — va completamente
+aparte (fuente → relé → cartucho → fuente).
+
+```
+   Notebook ──USB──► ESP32 ──señales──► L298N ──► Motor A y Motor B
+                       │                  ▲
+                       └──── GND común ───┘        ▲
+                                                   │
+                              Fuente SLAVE ~8V ────┘
+
+   Fuente MASTER 12V ──► relé ──► cartucho calefactor ──► vuelve a la fuente
+                                  (circuito cerrado sobre sí mismo, aparte de todo)
+```
+
+---
+
 ## PASO 0 — Preparar los rieles de la protoboard
 
 1. **Cable** → del pin **GND** del ESP32 → a la fila azul (−) de la protoboard. *(este es tu riel de GND)*
 2. **Cable** → del pin **3V3** del ESP32 → a la fila roja (+) de la protoboard. *(riel de 3.3V)*
 
 A partir de acá, "riel GND" = fila azul, y "riel 3.3V" = fila roja.
+
+> 💡 **Cómo funciona la protoboard (evita el 90% de las dudas):** cada fila de 5 agujeros está
+> conectada por dentro, así que **los 5 agujeros de una fila son el mismo punto eléctrico**.
+> Cuando un pin del ESP32 tiene que ir a varios lados —por ejemplo el **VIN (5V)**, que alimenta
+> el LCD, el relé y el sensor de sonido 1— no hay que amontonar tres cables en el mismo
+> agujero: se usan los otros agujeros **de la misma fila**. Los dos rieles largos de los
+> costados funcionan igual, pero a lo largo de toda la placa.
 
 ---
 
@@ -156,7 +190,23 @@ sale un cable al pin del ESP32 que le toca por color. La pata corta va al riel G
 
 ## PASO 7 — Cobertor: el driver L298N
 
-El L298N tiene 6 pines de control (IN1, IN2, IN3, IN4, ENA, ENB) y bornes de fuerza.
+**La placa de arriba abajo** (la roja con el disipador de aluminio en el medio):
+
+```
+         ┌──────────────────────────────────────────────┐
+  Motor  │ OUT1                                    OUT3 │  Motor
+    A    │ OUT2        ▐▌ disipador ▐▌             OUT4 │    B
+         │                                              │
+         │   ▪ jumper del regulador de 5V (DEJAR)        │
+         │  ┌──────┬──────┬──────┐   ▪               ▪  │
+         │  │ +12V │ GND  │ +5V  │  ENA IN1 IN2 IN3 IN4 ENB
+         └──┴──────┴──────┴──────┴──────────────────────┘
+              ▲ alimentación (3 tornillos)   ▲ control (6 pines)
+```
+
+- **2 borneras de 2 tornillos, una a cada costado** → los motores (OUT1/OUT2 y OUT3/OUT4).
+- **1 bornera de 3 tornillos** → toda la alimentación. **El del medio siempre es GND.**
+- **1 tira de 6 pines** rotulada `ENA IN1 IN2 IN3 IN4 ENB` → las señales del ESP32.
 
 ⚠️ **Antes de cablear, dos jumpers:**
 - **Sacá los 2 jumpers de ENA y ENB** (los capuchones plásticos). Con el jumper puesto el
@@ -173,15 +223,51 @@ El L298N tiene 6 pines de control (IN1, IN2, IN3, IN4, ENA, ENB) y bornes de fue
 27. **Cable** → **GPIO33** del ESP32 → pin **IN4** del L298N.
 28. **Cable** → **GPIO18** del ESP32 → pin **ENB** del L298N. ⬅️ **cambió** (antes GPIO14)
 
-### Alimentación del L298N (desde la fuente SLAVE, regulada a ~8V)
-29. **Cable** → **+ (rojo)** de la fuente SLAVE (8V) → al borne **+12V** del L298N.
-    *(el borne se llama "+12V" pero acepta de 7 a 12V: le ponemos 8V)*
-30. **Cable** → **− (negro)** de la fuente SLAVE (8V) → al borne **GND** del L298N.
-31. **Cable** → del borne **GND** del L298N → al **riel GND** de la protoboard. *(GND común: MUY importante)*
+### Alimentación del L298N — la bornera de 3 tornillos
 
-> 🚫 **El borne +5V del L298N no se conecta a nada.** Es una salida. Si lo enchufás al 5V/VIN
-> del ESP32 mientras el ESP32 está con el USB, quedan dos fuentes de 5V peleándose y podés
-> quemar el regulador de la placa. El ESP32 se alimenta por USB y punto.
+Toda la alimentación del módulo entra por **una sola bornera de 3 tornillos**. Están rotulados
+en la placa y **el del medio siempre es GND**:
+
+```
+        ┌─────────┬─────────┬─────────┐
+        │  +12V   │   GND   │   +5V   │   ← rotulado en la placa
+        └────┬────┴────┬────┴────┬────┘
+             │         │         │
+             │         │         └──  NO SE CONECTA NADA (es una SALIDA)
+             │         │
+             │         └──  DOS cables juntos en este mismo tornillo:
+             │                 1) el − (negro) de la fuente SLAVE
+             │                 2) un cable al riel GND de la protoboard
+             │
+             └──  el + (rojo) de la fuente SLAVE (8V)
+```
+
+**Son sólo 2 tornillos con cable, y en uno de ellos entran 2 cables.** Por eso la cuenta no
+te cerraba: el tercer tornillo (+5V) queda vacío.
+
+29. **Cable** → **+ (rojo)** de la fuente SLAVE (8V) → al tornillo **+12V**.
+    *(el tornillo se llama "+12V" pero acepta de 7 a 12V: le ponemos 8V)*
+30. **Cable** → **− (negro)** de la fuente SLAVE (8V) → al tornillo **GND**.
+31. **Cable** → del **mismo tornillo GND** (junto al anterior) → al **riel GND** de la
+    protoboard. *(este es el GND común con el ESP32: sin él, nada funciona)*
+
+> 💡 **Cómo entran dos cables en un tornillo:** pelá 8-10 mm de cada uno, juntá las dos puntas
+> y torcelas como si fueran un solo cable, y recién ahí apretá el tornillo. Después tirá suave
+> de cada uno por separado para confirmar que ninguno quedó flojo.
+
+> **¿Por qué el GND tiene que ser común?** El ESP32 le manda señales de 3,3V al L298N. Para que
+> el módulo entienda "3,3 voltios", los dos tienen que estar midiendo desde el mismo cero. Sin
+> ese cable, el L298N no interpreta nada y los motores hacen cualquier cosa (o nada).
+
+> 🚫 **No lleves el negativo de la fuente al riel de la protoboard y de ahí al L298N.** Parece
+> lo mismo, pero no lo es: así toda la corriente de los motores (más de 1A en cada arranque)
+> pasaría por el riel de la protoboard, que no está hecho para eso, y ese ruido se cuela en la
+> lectura del micrófono. La corriente de los motores va **directo de la fuente al módulo**; el
+> cable a la protoboard es sólo la referencia.
+
+> 🚫 **El tornillo +5V no se conecta a nada.** Es una salida que fabrica el propio módulo. Si lo
+> enchufás al 5V/VIN del ESP32 mientras el ESP32 está con el USB, quedan dos fuentes de 5V
+> peleándose y podés quemar el regulador de la placa. El ESP32 se alimenta por USB y punto.
 
 ### Los 2 motores del cobertor
 32. **Cable** → borne **OUT1** del L298N → a un cable del **Motor A** (el del rodillo).

@@ -239,6 +239,14 @@ montar el mecanismo.
   fines de carrera a dedo → movimiento completo → recién ahí acoplar el mecanismo.
 - El paso de los 8 LEDs quedó marcado como **en pausa** (están desconectados) con los pines
   nuevos, por si hay que rearmarlos antes de que llegue la tira.
+- **La alimentación del L298N no se entendía** (lo levantó Mariano con el módulo en la mano):
+  el documento pedía 3 cables y la bornera tiene 3 tornillos, pero uno (`+5V`) va vacío y en
+  `GND` entran **dos** cables. Se agregó el croquis de la bornera (`+12V | GND | +5V`, GND
+  siempre al medio), cómo meter dos cables en un tornillo, un croquis de la placa entera y un
+  mapa de las **tres alimentaciones independientes** (USB → ESP32 · MASTER 12V → calefactor ·
+  SLAVE 8V → L298N), que es lo único que comparten: el GND entre ESP32 y L298N. También se
+  explicó que las filas de la protoboard son un mismo punto eléctrico, que era la raíz de la
+  confusión (el VIN de 5V alimenta tres cosas).
 
 **Gate**: compilado con `arduino-cli` (core esp32 3.3.10) → **sin errores**, 83% de flash y
 15% de RAM. El único warning es el conocido de LiquidCrystal I2C (declara arquitectura AVR).

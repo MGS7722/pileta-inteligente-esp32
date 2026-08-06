@@ -118,12 +118,14 @@ LEDs (por cada color, 2 LEDs: uno de cada lado de la pileta)
 
 ```
 L298N (control)                 L298N (potencia)
-   IN1 ──── GPIO13                +12V ──── fuente regulada a ~8V (o LM2596 OUT)
-   IN2 ──── GPIO25                GND  ──── GND común
-   ENA ──── GPIO27 (PWM)          +5V  ──── (jumper puesto: salida 5V lógica)
-   IN3 ──── GPIO32
-   IN4 ──── GPIO33                OUT1/OUT2 ──── Motor A (rodillo de la lona)
-   ENB ──── GPIO18 (PWM)          OUT3/OUT4 ──── Motor B (tira de los cables)
+   IN1 ──── GPIO13                OUT1/OUT2 ──── Motor A (rodillo de la lona)
+   IN2 ──── GPIO25                OUT3/OUT4 ──── Motor B (tira de los cables)
+   ENA ──── GPIO27 (PWM)
+   IN3 ──── GPIO32                Bornera de 3 tornillos (GND es el del medio):
+   IN4 ──── GPIO33                  +12V ──── + de la fuente SLAVE (~8V)
+   ENB ──── GPIO18 (PWM)            GND  ──── DOS cables: − de la fuente SLAVE
+                                             + un cable al riel GND (común con el ESP32)
+                                    +5V  ──── SIN CONECTAR (es una salida del módulo)
 
    ⚠️ Quitar los jumpers de ENA y ENB (usamos PWM por pin).
    ⚠️ DEJAR puesto el jumper del regulador de 5V (sólo se saca con más de 12V).
@@ -161,15 +163,23 @@ Fines de carrera (interruptores de tope) — usar las patas COM y NO
 
 ## ⚡ Alimentación — resumen
 
-```
-        ┌──────────── Fuente 12V ────────────┐
-        │                                     │
-   Relé → cartucho calefactor       fuente regulada a ~8V (o LM2596)
-                                              │
-                                         L298N (motores 6V)
+Son **tres alimentaciones independientes**; no se mezclan entre sí:
 
-   ESP32  → se alimenta por USB (para programar y ver el Monitor Serie)
-            o por 5V. GND del ESP32 SIEMPRE unido al GND de todo lo demás.
+| Alimenta | A quién | Cuánto |
+|---|---|---|
+| USB de la notebook | El ESP32 — y por su intermedio el LCD, el lado de control del relé y los sensores | 5V |
+| Fuente MASTER | El cartucho calefactor, a través del relé | 12V |
+| Fuente SLAVE | El L298N y los 2 motores del cobertor | ~8V |
+
+```
+   Notebook ──USB──► ESP32 ──señales──► L298N ──► Motor A y Motor B
+                       │                  ▲
+                       └──── GND común ───┘        ▲
+                                                   │
+                              Fuente SLAVE ~8V ────┘
+
+   Fuente MASTER 12V ──► relé ──► cartucho calefactor ──► vuelve a la fuente
+                                  (circuito cerrado sobre sí mismo, aparte de todo)
 ```
 
 - **GND común** entre la fuente, el L298N, el relé, el ESP32 y los sensores. Es lo más importante.
