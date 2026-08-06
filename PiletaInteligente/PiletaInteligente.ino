@@ -94,9 +94,13 @@
 float tempObjetivo = 23.0;
 const float HISTERESIS    = 5.0;    // Margen para no prender/apagar a cada rato
 
-// El relé es activo-bajo: LOW lo prende, HIGH lo apaga.
-const int RELE_ON  = LOW;
-const int RELE_OFF = HIGH;
+// El módulo relé de este proyecto es ACTIVO-ALTO: HIGH energiza la bobina y
+// cierra el contacto, LOW lo suelta. Verificado en hardware el 2026-08-06: con
+// GPIO26 en HIGH el LED de estado se enciende y el calefactor consume; con LOW
+// se apaga. (Ojo: hay módulos activo-bajo idénticos por fuera; si alguna vez se
+// cambia el módulo, hay que volver a comprobar esto antes de conectar la carga.)
+const int RELE_ON  = HIGH;
+const int RELE_OFF = LOW;
 
 // ============================================================
 //   AJUSTES DE LAS LUCES / SONIDO
@@ -117,9 +121,22 @@ const unsigned long PERIODO_MUESTREO_US = 100;   // 10 kHz de muestreo
 // El sistema aprende solo el nivel de ruido ambiente (la "base") y considera
 // GOLPE cuando el volumen instantáneo la supera con margen. Así reacciona igual
 // con música fuerte o suave, sin depender de un umbral fijo.
-const float FACTOR_GOLPE = 1.6;   // El volumen debe superar base*FACTOR para ser golpe
-const int   GOLPE_MINIMO = 32;    // Piso absoluto: nunca disparar por debajo de esto
-const int   SONIDO_MINIMO = 26;   // Piso de "hay sonido" (para elegir efecto A/B)
+//
+// Calibrado con mediciones reales del módulo 1 alimentado a 5V (2026-08-06):
+//   silencio      -> pico a pico  33
+//   música fuerte -> pico a pico  82
+// Los valores anteriores venían de la señal más débil de 3.3V (silencio ~17) y
+// habían quedado POR DEBAJO del ruido de fondo, así que ya no filtraban nada.
+const float FACTOR_GOLPE = 1.30;  // El volumen debe superar base*FACTOR para ser golpe
+const int   GOLPE_MINIMO = 50;    // Piso absoluto: nunca disparar por debajo de esto
+const int   SONIDO_MINIMO = 45;   // Piso de "hay sonido" (para elegir efecto A/B)
+
+// Velocidad con la que la base aprende el ambiente. Sube MUY lento para que una
+// canción sostenida no "infle" la base hasta taparse a sí misma (el error que
+// dejaba el umbral por encima de los picos reales), y baja rápido para volver
+// enseguida al silencio cuando la música para.
+const float ALFA_BASE_SUBE = 0.008f;   // ~4,4 s de constante de tiempo
+const float ALFA_BASE_BAJA = 0.060f;   // ~0,6 s
 const unsigned long DURACION_APAGON_MS = 110;  // Cuánto quedan apagadas en cada golpe
 const unsigned long REFRACTARIO_MS     = 150;  // Espera mínima entre golpes seguidos
 
@@ -181,9 +198,18 @@ enum FuenteGolpe { FUENTE_MIXTA, FUENTE_AO, FUENTE_DO };
 FuenteGolpe fuenteGolpe = FUENTE_MIXTA;
 int  ultimosFlancosDO = 0;    // Cambios de estado del DO en la última ventana
 bool golpeDO = false;         // true si el módulo 2 detectó golpe en la última ventana
+bool golpeAO = false;         // true si el canal analógico detectó golpe en la última ventana
+int  umbralGolpe = 0;         // Umbral vigente (base*FACTOR, nunca menor a GOLPE_MINIMO)
 unsigned long ultimoMomentoConSonido = 0;  // Memoria de 800 ms de "hay música"
 bool hayMusica = false;                    // true mientras se detecta sonido sostenido
 unsigned long inicioApagon = 0;            // Cuándo empezó el último apagón por golpe
+
+// --- Traza de calibración (comando /trace) ---
+// Vuelca por el Monitor Serie el pulso del sonido en vivo, para poder calibrar
+// con datos reales en lugar de a ojo. Arranca APAGADA: no ensucia el uso normal.
+bool trazaSonidoActiva = false;
+unsigned long ultimaTraza = 0;
+const unsigned long INTERVALO_TRAZA_MS = 100;
 
 // --- Cobertor ---
 enum EstadoCobertor { COB_PARADO, COB_ABRIENDO, COB_CERRANDO };
@@ -395,9 +421,14 @@ void medirSonido() {
 
   // La base aprende el nivel ambiente: baja rápido y sube lento, así un golpe
   // puntual no la "infla" pero el sistema se acomoda al volumen general.
-  float alfa = (ultimoPicoAPico > p2pBase) ? 0.02f : 0.06f;
+  float alfa = (ultimoPicoAPico > p2pBase) ? ALFA_BASE_SUBE : ALFA_BASE_BAJA;
   p2pBase += alfa * (ultimoPicoAPico - p2pBase);
   p2pBase = constrain(p2pBase, 12.0f, 150.0f);
+
+  // ¿Golpe en el canal analógico? Se decide acá —y no en las luces— para que la
+  // traza, el comando /audio y el efecto miren exactamente el mismo dato.
+  umbralGolpe = max((int)(p2pBase * FACTOR_GOLPE), GOLPE_MINIMO);
+  golpeAO = (ultimoPicoAPico >= umbralGolpe);
 
   // ¿Hay música? El volumen sobresale del ambiente aprendido, con memoria de
   // 800 ms para que la detección no parpadee entre beats.
@@ -406,6 +437,28 @@ void medirSonido() {
   if (usaDO() && golpeDO) haySonidoAhora = true;
   if (haySonidoAhora) ultimoMomentoConSonido = millis();
   hayMusica = (millis() - ultimoMomentoConSonido) < 800;
+
+  emitirTrazaSonido();
+}
+
+// Vuelca una línea de traza por el Monitor Serie (sólo si /trace está activa).
+// Además del ritmo fijo, imprime SIEMPRE que hay un golpe: así ningún evento
+// queda afuera del registro aunque dure menos que el intervalo.
+void emitirTrazaSonido() {
+  if (!trazaSonidoActiva) return;
+
+  bool hayGolpe = golpeAO || golpeDO;
+  if (!hayGolpe && (millis() - ultimaTraza < INTERVALO_TRAZA_MS)) return;
+  ultimaTraza = millis();
+
+  Serial.print("TRAZA t=");     Serial.print(millis());
+  Serial.print(" p2p=");        Serial.print(ultimoPicoAPico);
+  Serial.print(" base=");       Serial.print(p2pBase, 1);
+  Serial.print(" umbral=");     Serial.print(umbralGolpe);
+  Serial.print(" golpeAO=");    Serial.print(golpeAO ? 1 : 0);
+  Serial.print(" flancosDO=");  Serial.print(ultimosFlancosDO);
+  Serial.print(" golpeDO=");    Serial.print(golpeDO ? 1 : 0);
+  Serial.print(" musica=");     Serial.println(hayMusica ? 1 : 0);
 }
 
 // ¿La fuente elegida incluye a cada canal?
@@ -442,8 +495,7 @@ void actualizarLucesSonido() {
 
   // ¿Golpe? Según la fuente elegida: el canal AO (volumen supera a la base con
   // margen), el canal DO (el módulo 2 lo detectó por hardware), o cualquiera.
-  bool golpeAO = (ultimoPicoAPico >= p2pBase * FACTOR_GOLPE) &&
-                 (ultimoPicoAPico >= GOLPE_MINIMO);
+  // Ambos los calculó medirSonido() sobre la ventana recién medida.
   bool superaUmbral = (usaAO() && golpeAO) || (usaDO() && golpeDO);
   if (superaUmbral && (ahora - inicioApagon) >= (DURACION_APAGON_MS + REFRACTARIO_MS)) {
     inicioApagon = ahora;   // Arranca un apagón nuevo
@@ -777,6 +829,12 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   else if (text == "/diag") {
     bot.sendMessage(chat_id, armarDiagnosticoMicrofono(), "");
   }
+  else if (text == "/trace") {
+    trazaSonidoActiva = !trazaSonidoActiva;
+    bot.sendMessage(chat_id, trazaSonidoActiva
+      ? "Traza de sonido ACTIVADA: los datos salen por el Monitor Serie (115200)."
+      : "Traza de sonido apagada.", "");
+  }
   else if (text == "/ip") {
     if (WiFi.status() == WL_CONNECTED) {
       bot.sendMessage(chat_id, "IP del ESP32: " + WiFi.localIP().toString(), "");
@@ -816,6 +874,7 @@ String armarAyuda(String from_name) {
   s += "/audio - datos del sonido\n";
   s += "/sonido_mixto, /sonido_ao, /sonido_do - fuente de golpes\n";
   s += "/diag - diagnostico del microfono\n";
+  s += "/trace - traza del sonido por Monitor Serie\n";
   s += "/ip - IP del ESP32";
   return s;
 }
@@ -910,7 +969,6 @@ String armarAudio() {
   s += "\n";
   s += "VOLUMEN (pico a pico): " + String(ultimoPicoAPico) + "\n";
   s += "Base ambiente (aprendida): " + String(p2pBase, 1) + "\n";
-  int umbralGolpe = max((int)(p2pBase * FACTOR_GOLPE), GOLPE_MINIMO);
   s += "Golpe a partir de: " + String(umbralGolpe) + "\n";
   s += "Fuente: " + fuenteGolpeTexto() + "\n";
   s += "DO (2do mic): " + String(ultimosFlancosDO) + " flancos";
