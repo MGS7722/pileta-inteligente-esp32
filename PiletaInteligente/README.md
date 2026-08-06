@@ -120,12 +120,20 @@ Perillas disponibles en el código, por si hiciera falta afinar:
 
 | Constante | Valor | Qué hace |
 |---|---|---|
-| `FACTOR_GOLPE` | 1.6 | Cuánto debe sobresalir el golpe sobre el ambiente (bajar = más sensible) |
-| `GOLPE_MINIMO` | 32 | Piso absoluto para disparar (evita falsos golpes en silencio) |
+| `FACTOR_GOLPE` | 1.30 | Cuánto debe sobresalir el golpe sobre el ambiente (bajar = más sensible) |
+| `GOLPE_MINIMO` | 50 | Piso absoluto para disparar (evita falsos golpes en silencio) |
+| `SONIDO_MINIMO` | 45 | Piso de "hay música" (elige entre sombra rotante y luces fijas) |
 | `DURACION_APAGON_MS` | 110 | Cuántos milisegundos quedan apagadas en cada golpe |
+
+> Estos valores están calibrados para el micrófono alimentado a **5V**, con mediciones
+> reales del 2026-08-06: silencio ≈ 33 de pico a pico, música ≈ 82, golpes de 250 a 1040.
+> Los valores anteriores venían de la señal más débil de 3.3V y habían quedado por debajo
+> del ruido de fondo.
 
 > 💡 Para ver los números en vivo: mandá `/audio` con música sonando. Muestra el
 > volumen actual, la base aprendida y a partir de qué valor se dispara el golpe.
+> Para calibrar con datos en serio, `/trace` vuelca el pulso del sonido por el Monitor
+> Serie (115200) unas 10 veces por segundo, más una línea extra en cada golpe.
 
 **Detección bicanal:** además del micrófono analógico (AO), un **segundo módulo** de
 sonido conectado por su salida **DO** al GPIO35 actúa como detector de golpes por
@@ -161,6 +169,7 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/temp` — temperatura y calentador
 - `/audio` — datos del sonido
 - `/sonido_mixto` / `/sonido_ao` / `/sonido_do` — elegir la fuente de golpes
+- `/trace` — prende/apaga la traza del sonido por el Monitor Serie (para calibrar)
 - `/ip` — IP del ESP32
 
 ---

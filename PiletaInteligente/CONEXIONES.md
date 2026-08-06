@@ -6,7 +6,9 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 > ⚠️ **Reglas de oro del cableado (leer antes de conectar):**
 > 1. **Todos los GND van juntos** (ESP32, L298N, relé, fuente, sensores). Sin GND común, nada funciona bien.
 > 2. **Nunca metas 5V o 12V a un pin GPIO** del ESP32: los pines son de **3.3V**. Se queman con más.
-> 3. El **sensor de sonido se alimenta a 3.3V** (así su salida nunca pasa de 3.3V y no daña el GPIO34).
+> 3. El **sensor de sonido 1 (AO) se alimenta a 5V/VIN**: el módulo pide 4-6V y a 3.3V daba una
+>    señal demasiado débil. Verificado con `/diag`: el Máximo debe quedar **por debajo de 3000**
+>    para no dañar el GPIO34. El **módulo 2 (DO), en cambio, va a 3.3V** — nunca a 5V.
 
 ---
 
@@ -55,11 +57,27 @@ Módulo relé
    GND ──── GND
    IN  ──── GPIO26
    ── lado de potencia (12V) ──
-   Fuente12V(+) ── cartucho calefactor ── relé COM
-   relé NO ────────────────────────────── Fuente12V(−)
+   Fuente12V(+) ──────────────── relé COM
+   relé NO ── cartucho calefactor ── Fuente12V(−)
 ```
 
 - El relé "corta" o "cierra" el circuito del cartucho de 12V. El cartucho **no** se conecta al ESP32.
+- **El relé va del lado del POSITIVO** (entre los +12V y el cartucho). Así, con el relé
+  abierto, el cartucho queda sin tensión en ninguno de sus extremos. Si se cortara el
+  negativo, el cartucho quedaría con +12V permanentes y cualquier contacto accidental con
+  masa lo encendería sin que el ESP32 pueda evitarlo — grave con el cartucho sumergido.
+- **Usar NO, nunca NC**: con el relé en reposo el circuito queda abierto, así que si el
+  ESP32 se cuelga o se queda sin alimentación, el calefactor queda apagado.
+- ⚠️ **El negativo de los 12V NO va al riel GND de la protoboard.** El circuito del
+  calefactor se cierra sobre sí mismo (fuente → relé → cartucho → fuente) y el relé ya
+  aísla ambos mundos. Meter esa corriente al riel de masa corre la referencia del ADC y
+  ensucia la lectura del micrófono.
+- Los tres cables del lado de 12V van **gruesos y directos a los tornillos**, nunca por la
+  protoboard: sus rieles no están hechos para varios amperes.
+- **Este módulo relé es ACTIVO-ALTO** (verificado en hardware el 2026-08-06): se activa con
+  GPIO26 en HIGH. Hay módulos activo-bajo idénticos por fuera; si se cambia el módulo, hay
+  que volver a comprobarlo y ajustar `RELE_ON`/`RELE_OFF` en el `.ino` **antes** de
+  conectar la carga.
 - Sin la resistencia de 4.7kΩ, el sensor lee −127 (error) y el calentador no arranca.
 
 ## 2️⃣ Sistema Luces disco (8 LEDs = 4 colores × 2 lados)

@@ -18,8 +18,11 @@ desde un bot de Telegram. Todo corre en un solo ESP32 con el programa
 
 ## Sistema 2 — Luces al ritmo de la música
 - Sensor de sonido detecta el ritmo de la música ambiente
-- Análisis FFT clasifica graves/agudos y define el patrón de luces
-- 8 LEDs de colores (4 colores × 2 lados: verde, rojo, azul, blanco) al ritmo del sonido
+- Medición por **volumen pico a pico** en ventanas de ~35 ms, con una base de ruido
+  ambiente que el sistema aprende solo (sin FFT: con esta señal, clasificar frecuencias
+  no aportaba información confiable)
+- 8 LEDs de colores (4 colores × 2 lados: verde, rojo, azul, blanco) al ritmo del sonido:
+  sombra rotante mientras hay música y apagón tipo strobe en cada golpe
 - Arrancan APAGADAS; se activan desde Telegram (auto / ON / OFF)
 
 ## Sistema 3 — Cobertor automático retráctil
@@ -37,7 +40,8 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Calentador: /calentador_auto, /calentador_on, /calentador_off
 - Luces: /luces_auto, /luces_on, /luces_off
 - Cobertor: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar
-- Consultas: /status, /temp, /audio, /ip
+- Ajustes: /temperatura 28 (objetivo, guardado en NVS), /sonido_mixto | /sonido_ao | /sonido_do
+- Consultas: /status, /temp, /audio, /diag, /trace, /ip
 
 ---
 
@@ -81,7 +85,8 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 | GPIO17 | LEDs rojos (luces disco) |
 | GPIO18 | LEDs azules (luces disco) |
 | GPIO19 | LEDs blancos (luces disco) |
-| GPIO34 | Sensor de sonido (analógico, ADC1) |
+| GPIO34 | Sensor de sonido 1 — salida AO (analógica, ADC1). Módulo alimentado a 5V/VIN |
+| GPIO35 | Sensor de sonido 2 — salida DO (golpes por hardware). Módulo a 3.3V |
 | GPIO13 / GPIO25 / GPIO27 | L298N motor A: IN1 / IN2 / ENA (PWM) |
 | GPIO32 / GPIO33 / GPIO14 | L298N motor B: IN3 / IN4 / ENB (PWM) |
 | GPIO23 | Fin de carrera cerrado |

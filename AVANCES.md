@@ -8,13 +8,16 @@
 - [x] LCD 16x02 mostrando temperatura y estado
 - [x] Ciclo completo verificado en protoboard (2026-06-25)
 - [x] Control por Telegram (auto / forzar ON / forzar OFF)
-- [ ] Conseguir fuente 12V y conectar el cartucho calefactor real
-- [ ] Probar el sistema completo con el calentador real
+- [x] Fuente de 12V y cartucho calefactor conectados por el relé (2026-08-06)
+- [x] Polaridad del relé corregida: el módulo es ACTIVO-ALTO (verificado en hardware)
+- [ ] Probar el ciclo completo con el calentador real (encendido, corte por objetivo)
 
 ## Sistema 2 — Luces al ritmo de la música
 
-- [x] Sensor de sonido leído por el ESP32 (pin GPIO34)
-- [x] Detección de graves/agudos por FFT (arduinoFFT)
+- [x] Sensor de sonido leído por el ESP32 (pin GPIO34, módulo alimentado a 5V)
+- [x] Detección de ritmo por volumen pico a pico con base adaptativa (la FFT se eliminó
+      en la v3: con esta señal no aportaba información confiable)
+- [x] Sensor validado con datos reales: rango dinámico de más de 30× (2026-08-06)
 - [x] 4 LEDs con efecto disco según la música
 - [x] Control por Telegram (auto / ON / OFF)
 - [x] Verificado funcionando (archivo "posta" de los compañeros)
@@ -93,6 +96,73 @@
   y filtro anti-pin-flotante. Redundancia para que la primera prueba en el taller funcione
 - **Nuevo `PROTOCOLO-TALLER.md`**: checklist paso a paso para la visita al taller (cables,
   verificación /diag, calibración del potenciómetro a ojo, prueba de fuego y plan B)
+
+### Sesión 2026-08-06 — Prueba en hardware: sensor validado y tres fallas de raíz
+
+**Instrumentación nueva**
+- Comando **`/trace`**: vuelca por el Monitor Serie el pulso del sonido (p2p, base, umbral,
+  golpe AO/DO, música) ~10 veces por segundo, más una línea extra en cada golpe. Permitió
+  calibrar con datos reales capturados por USB en vez de a ojo. Arranca apagado.
+- El cálculo del golpe del canal AO se movió a `medirSonido()`, para que la traza, `/audio`
+  y el efecto de luces miren exactamente el mismo dato.
+
+**El sensor de sonido SIRVE — comprobado con 116 muestras reales**
+| Condición | Pico a pico |
+|---|---|
+| Silencio | 9 – 36 |
+| Música (valles) | 60 – 130 |
+| Música (golpes) | 250 – 500 |
+| Picos fuertes | **870 – 1040** |
+
+Rango dinámico de más de 30×. Con el micrófono a 5V la señal alcanza de sobra, también
+para la futura tira WS2812. (El `/diag` mostraba sólo 82 porque mide una foto de 50 ms;
+la traza continua ve los picos reales.)
+
+**Recalibración con esos números** — los umbrales venían de la señal de 3.3V (silencio ~17)
+y habían quedado POR DEBAJO del ruido de fondo, así que ya no filtraban nada:
+`FACTOR_GOLPE` 1.6 → **1.30**, `GOLPE_MINIMO` 32 → **50**, `SONIDO_MINIMO` 26 → **45**,
+alfa de subida de la base 0.02 → **0.008**.
+
+**Fallas encontradas (en orden de gravedad)**
+1. 🔴 **Relé ACTIVO-ALTO, no activo-bajo.** `RELE_ON` estaba en LOW: el calefactor calentaba
+   con el sistema en OFF y se apagaba con `/calentador_on`. Corregido a `RELE_ON = HIGH`.
+   Verificado en hardware. El cableado estaba bien.
+2. 🔴 **Un DS18B20 en cortocircuito** hizo hervir dos ESP32 hasta dejarlos sin arrancar.
+   Ambas placas se recuperaron con un corte total de alimentación (latch-up, no daño
+   permanente). Sensor reemplazado por el de repuesto.
+3. 🟠 **El programa se congela hasta 3 segundos seguidos** (medido en la traza: huecos de
+   3.045 ms). Culpables: `requestTemperatures()` bloquea 750 ms a 12 bits, y `getUpdates()`
+   de Telegram otro 1-2 s cada 2,5 s. Es lo que hace que el LCD y las luces vayan a
+   tirones. **Pendiente de arreglar** con `setWaitForConversion(false)` y sacando Telegram
+   del camino del show.
+4. 🟠 **La base adaptativa se infla hasta cegar al sistema**: con música sostenida llegó a
+   147 y dejó el umbral en 192, declarando "sin música" con música sonando. Bajar el alfa
+   lo mitiga pero no lo resuelve — es estructural del filtro exponencial. **Pendiente**:
+   comparar contra el promedio del último segundo (detección de ritmo por energía).
+5. 🟡 **GPIO5 es pin de strapping** y lo usa el fin de carrera ABIERTO. Debe estar en HIGH
+   durante el boot: si el cobertor queda abierto (fin de carrera presionado) y se corta la
+   luz, el ESP32 no vuelve a arrancar. **Pendiente**: mover ese fin de carrera de pin.
+6. 🟡 **Los pines GPIO6–11 (SD0-SD3, CMD, CLK) son de la memoria flash.** En las placas de
+   38 pines están expuestos en el header; un cable ahí y el ESP32 no arranca. Agregado al
+   checklist de cableado.
+
+**Documentación corregida**
+- El relé ahora va **del lado del positivo** (`CONEXIONES.md`, `CABLEADO-PASO-A-PASO.md`):
+  con el relé abierto el cartucho queda sin tensión, en vez de con +12V permanentes.
+  Importante porque va sumergido.
+- El negativo de los 12V **no va al riel GND** de la protoboard (corre la referencia del
+  ADC y ensucia el micrófono).
+- Micrófono 1 a 5V/VIN (estaba documentado a 3.3V); `PROYECTO.md` ya no menciona la FFT y
+  suma GPIO35 y los comandos nuevos.
+
+**Decisión abierta**: Mariano pide efecto de discoteca real, con las luces separadas por
+graves / medios / agudos. Falta medir la forma de onda cruda del micrófono para saber si
+el módulo entrega audio real o una envolvente rectificada — si es lo segundo, no hay
+frecuencias que analizar. Los 8 LEDs se desconectaron: se reemplazan por la tira WS2812.
+
+#### Atribución por modelo (sesión 2026-08-06)
+- **Opus 5**: toda la sesión — instrumentación `/trace`, captura y análisis de los datos
+  del sensor, recalibración, diagnóstico de las 6 fallas, corrección del relé y los docs.
 
 #### Atribución por modelo (sesión 2026-07-23)
 - **Opus 4.8**: /diag, pico a pico + DC removal, luces binarias, efecto en negativo (commits

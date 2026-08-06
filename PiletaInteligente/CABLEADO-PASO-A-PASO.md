@@ -54,11 +54,21 @@ El módulo relé tiene 3 pines de control: **VCC, GND, IN**.
 
 **El lado de fuerza del relé (los 3 tornillos: COM, NO, NC):**
 
-14. **Cable** → del **+ (rojo)** de la fuente MASTER (12V) → a un extremo del **cartucho calefactor**.
-15. **Cable** → del otro extremo del **cartucho calefactor** → al tornillo **COM** del relé.
-16. **Cable** → del tornillo **NO** del relé → al **− (negro)** de la fuente MASTER (12V).
+14. **Cable** → del **+ (rojo)** de la fuente MASTER (12V) → al tornillo **COM** del relé.
+15. **Cable** → del tornillo **NO** del relé → a un extremo del **cartucho calefactor**.
+16. **Cable** → del otro extremo del **cartucho calefactor** → al **− (negro)** de la fuente MASTER (12V).
 
 > Así el relé "abre y cierra" el circuito del calefactor. El calefactor NUNCA toca el ESP32.
+
+⚠️ **Tres cosas que no se negocian en este paso:**
+- **El relé va del lado del positivo** (pasos 14-15). Con el relé abierto, el cartucho queda
+  sin tensión. Si se cortara el negativo, quedaría con +12V permanentes y un contacto
+  accidental con masa lo encendería solo — peligroso con el cartucho sumergido.
+- **NO, nunca NC.** NC está cerrado en reposo: el calefactor arrancaría prendido y seguiría
+  prendido si el ESP32 se cuelga. Con NO, el estado de reposo es apagado.
+- **El negro de la fuente va directo al cartucho, NO al riel GND de la protoboard.** El
+  circuito de 12V se cierra sobre sí mismo; el relé ya aísla los dos mundos. Estos tres
+  cables van gruesos y directos a los tornillos, nunca por la protoboard.
 
 ---
 
@@ -171,9 +181,12 @@ Es el módulo de sonido de repuesto (KY-037). ⚠️ Este va a **3.3V, NUNCA a 5
 
 ## ✅ Checklist final antes de encender
 
-- [ ] ¿Todos los **GND** están unidos? (ESP32, relé, L298N, fuente, sensores → todos al riel GND)
+- [ ] ¿Los **GND de la lógica** están unidos? (ESP32, L298N, relé *lado control*, sensores)
+      **El negativo de los 12V del calefactor NO** — ese circuito va aparte.
 - [ ] ¿La resistencia de **4.7kΩ** está entre GPIO4 y 3.3V?
-- [ ] ¿El sensor de sonido está en **3.3V** (no en 5V)?
+- [ ] ¿El sensor de sonido **1** está en **VIN (5V)** y el **2** en **3.3V**?
+- [ ] ¿Ningún cable en los pines **SD0, SD1, SD2, SD3, CMD, CLK** (GPIO6–11)? Son de la
+      memoria flash: un solo cable ahí y **el ESP32 no arranca**.
 - [ ] ¿Cada LED tiene **su** resistencia de 220Ω?
 - [ ] ¿Sacaste los **jumpers ENA/ENB** del L298N?
 - [ ] ¿La fuente **MASTER a 12V** y la **SLAVE a ~8V**, con TRACKING en **INDEP**?
