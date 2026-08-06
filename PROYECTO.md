@@ -41,7 +41,8 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Luces: /luces_auto, /luces_on, /luces_off
 - Cobertor: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar
 - Prueba de taller: /motor_a, /motor_b (mueven un motor solo 2 segundos, sin fines de carrera)
-- Ajustes: /temperatura 28 (objetivo, guardado en NVS), /sonido_mixto | /sonido_ao | /sonido_do
+- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (motores, en %), /sonido_mixto |
+  /sonido_ao | /sonido_do — todos guardados en NVS
 - Consultas: /status, /temp, /audio, /diag, /trace, /ip
 
 ---

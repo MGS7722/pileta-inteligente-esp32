@@ -166,6 +166,8 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/motor_a` / `/motor_b` — prueba de taller: mueve **un** motor 2 segundos, sin mirar los
   fines de carrera. Para verificar cableado y sentido de giro con los motores desacoplados
   (ver `CABLEADO-PASO-A-PASO.md`)
+- `/velocidad 35` — qué tan rápido se mueven los motores, en % (de 20 a 100). Queda guardada
+  en la memoria del ESP32. Sin número, muestra la actual
 
 **Información**
 - `/status` — estado general

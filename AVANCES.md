@@ -34,8 +34,10 @@
 - [x] Cableado auditado contra la documentación oficial y pines reasignados a los "tranquilos"
       (ENB → GPIO18, fin de carrera abierto → GPIO19) — 2026-08-06
 - [x] Comandos `/motor_a` y `/motor_b` para probar un motor solo, sin fines de carrera
-- [ ] Montar el mecanismo físico y conectar L298N + motores + fines de carrera
-- [ ] Probar en hardware (calibrar velocidad y direcciones de giro)
+- [x] **Los dos motores giran** — probado en hardware con el L298N y la fuente a 8V (2026-08-06)
+- [x] Velocidad ajustable en vivo desde Telegram con `/velocidad` (%, guardada en NVS)
+- [ ] Conectar los 2 fines de carrera y verificar que corten
+- [ ] Montar el mecanismo físico y calibrar el sentido de giro de cada motor
 
 ## Bot de Telegram
 
@@ -251,9 +253,20 @@ montar el mecanismo.
 **Gate**: compilado con `arduino-cli` (core esp32 3.3.10) → **sin errores**, 83% de flash y
 15% de RAM. El único warning es el conocido de LiquidCrystal I2C (declara arquitectura AVR).
 
-**Pendiente de la prueba en hardware**: verificar sentido de giro de cada motor, que los
-fines de carrera corten, y ajustar `VELOCIDAD_COBERTOR` (hoy 180/255) si con la lona puesta
-a los motores les cuesta arrancar.
+**Prueba en hardware — los motores andan** (misma tarde, con el L298N cableado y la fuente
+SLAVE a 8V): `/motor_a` y `/motor_b` mueven cada motor por separado. Verificado además por el
+Monitor Serie leído desde la PC: WiFi conectado, `Bot de Telegram listo`, sensor en 20,5 °C y
+el loop corriendo parejo. Los fines de carrera todavía no están conectados — con los pines al
+aire el pull-up interno los deja en "no tocado", así que su cableado queda por verificar.
+
+**Velocidad ajustable en vivo** (`/velocidad N`, en porcentaje, guardada en NVS): los motores
+iban demasiado rápido para un cobertor. En vez de dejar el número fijo en el código, se hizo
+configurable desde Telegram para calibrarla en el taller sin recompilar. El valor de fábrica
+bajó de 180/255 (70%) a **115/255 (45%)** y el mínimo aceptado es 20%: por debajo, el motor
+zumba y no vence su propio rozamiento.
+
+**Pendiente**: conectar los fines de carrera y verificar que corten; definir el sentido de
+giro de cada motor una vez montado el mecanismo.
 
 #### Atribución por modelo (sesión 2026-08-06, parte 2)
 - **Opus 5**: auditoría del cableado, investigación en documentación oficial, reasignación de

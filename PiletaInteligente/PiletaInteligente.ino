@@ -172,7 +172,15 @@ const int FLANCOS_DO_MAXIMO = 8;
 //   AJUSTES DEL COBERTOR
 // ============================================================
 
-const int VELOCIDAD_COBERTOR = 180;             // PWM 0-255 (más bajo = más lento y suave)
+// Velocidad de los motores, en PWM de 0 a 255. Se ajusta desde Telegram con
+// /velocidad (en porcentaje) y queda guardada en la memoria del ESP32, así se
+// calibra en el taller sin recompilar. 115 (~45%) es el valor de fábrica.
+int velocidadCobertor = 115;
+
+// Piso físico: por debajo de ~20% el motor no vence su propio rozamiento, zumba
+// y no llega a girar. No es un problema del programa, es el motor.
+const int VELOCIDAD_MINIMA_PORCENTAJE = 20;
+
 const unsigned long TIMEOUT_COBERTOR = 30000;    // Corte de seguridad si no llega al tope (ms)
 
 // Prueba de taller (/motor_a y /motor_b): cuánto gira un motor solo, para
@@ -312,6 +320,7 @@ void setup() {
   preferencias.begin("pileta", false);
   tempObjetivo = preferencias.getFloat("tempObj", 23.0);
   fuenteGolpe  = (FuenteGolpe)preferencias.getUChar("fuenteGolpe", FUENTE_MIXTA);
+  velocidadCobertor = preferencias.getUChar("velCobertor", velocidadCobertor);
 
   // Sensor de temperatura
   sensores.begin();
@@ -555,6 +564,12 @@ void emitirTrazaSonido() {
   Serial.print(" musica=");     Serial.println(hayMusica ? 1 : 0);
 }
 
+// La velocidad se guarda en PWM (0-255) porque es lo que entiende el L298N, pero
+// se muestra y se pide en porcentaje, que es lo que entiende cualquiera.
+int velocidadPorcentaje() {
+  return (velocidadCobertor * 100) / 255;
+}
+
 // ¿La fuente elegida incluye a cada canal?
 bool usaAO() { return fuenteGolpe == FUENTE_MIXTA || fuenteGolpe == FUENTE_AO; }
 bool usaDO() { return fuenteGolpe == FUENTE_MIXTA || fuenteGolpe == FUENTE_DO; }
@@ -672,7 +687,7 @@ void motorA_libre() {
 void motorA_enrollar() {
   digitalWrite(MOTOR_A_IN1, HIGH);
   digitalWrite(MOTOR_A_IN2, LOW);
-  analogWrite(MOTOR_A_EN, VELOCIDAD_COBERTOR);
+  analogWrite(MOTOR_A_EN, velocidadCobertor);
 }
 
 // Motor B libre: suelta cable, gira arrastrado.
@@ -686,7 +701,7 @@ void motorB_libre() {
 void motorB_tirar() {
   digitalWrite(MOTOR_B_IN3, HIGH);
   digitalWrite(MOTOR_B_IN4, LOW);
-  analogWrite(MOTOR_B_EN, VELOCIDAD_COBERTOR);
+  analogWrite(MOTOR_B_EN, velocidadCobertor);
 }
 
 void cobertorFrenar() {
@@ -1018,6 +1033,27 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
                                " C. Guardada: sobrevive reinicios.", "");
     }
   }
+  else if (text.startsWith("/velocidad")) {
+    String arg = text.substring(10);   // lo que viene después de "/velocidad"
+    arg.trim();
+    int porcentaje = arg.toInt();
+
+    if (arg.length() == 0) {
+      bot.sendMessage(chat_id, "Velocidad de los motores: " + String(velocidadPorcentaje()) +
+                               "%.\nPara cambiarla: /velocidad 35", "");
+    } else if (porcentaje < VELOCIDAD_MINIMA_PORCENTAJE || porcentaje > 100) {
+      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre " +
+                               String(VELOCIDAD_MINIMA_PORCENTAJE) + " y 100. Ej: /velocidad 35\n"
+                               "Por debajo de " + String(VELOCIDAD_MINIMA_PORCENTAJE) +
+                               "% el motor zumba pero no llega a girar.", "");
+    } else {
+      velocidadCobertor = (porcentaje * 255) / 100;
+      preferencias.putUChar("velCobertor", (uint8_t)velocidadCobertor);
+      bot.sendMessage(chat_id, "Velocidad de los motores: " + String(porcentaje) +
+                               "%. Guardada: sobrevive reinicios.\n"
+                               "Probala con /motor_a o /motor_b.", "");
+    }
+  }
   else if (text == "/audio") {
     bot.sendMessage(chat_id, armarAudio(), "");
   }
@@ -1063,7 +1099,8 @@ String armarAyuda(String from_name) {
   s += "/cobertor_abrir - destapar la pileta\n";
   s += "/cobertor_cerrar - tapar la pileta\n";
   s += "/cobertor_parar - frenar el cobertor\n";
-  s += "/motor_a, /motor_b - probar un motor solo (taller)\n\n";
+  s += "/motor_a, /motor_b - probar un motor solo (taller)\n";
+  s += "/velocidad 35 - que tan rapido se mueven los motores (%)\n\n";
   s += "INFORMACIÓN:\n";
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
@@ -1093,6 +1130,7 @@ String armarStatus() {
   s += "\n";
   s += "Fuente golpes: " + fuenteGolpeTexto() + "\n";
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
+  s += "Velocidad motores: " + String(velocidadPorcentaje()) + "%\n";
   s += "WiFi: ";
   s += (WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado");
   return s;
