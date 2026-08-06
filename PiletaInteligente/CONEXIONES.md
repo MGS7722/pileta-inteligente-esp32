@@ -123,14 +123,15 @@ L298N (control)                 L298N (potencia)
    ENA ──── GPIO27 (PWM)
    IN3 ──── GPIO32                Bornera de 3 tornillos (GND es el del medio):
    IN4 ──── GPIO33                  +12V ──── + de la fuente SLAVE (~8V)
-   ENB ──── GPIO18 (PWM)            GND  ──── − de la fuente SLAVE
+   ENB ──── GPIO18 (PWM)            GND  ──── DOS cables: − de la fuente SLAVE
+                                             + un cable al riel GND de la protoboard
                                     +5V  ──── SIN CONECTAR (es una salida del módulo)
 
-   GND común (imprescindible): del borne − de la fuente SLAVE sale un segundo
-   cable al riel GND de la protoboard. Une el cero del ESP32 (que se alimenta
-   por USB) con el cero del L298N; sin él, el módulo no interpreta las señales.
-   Puede salir del borne de la fuente o del tornillo GND del módulo: es el mismo
-   punto eléctrico. Del borne es más cómodo (entran dos cables sin apretujar).
+   Ese segundo cable del GND es el GND común y es imprescindible: une el cero del
+   ESP32 (que se alimenta por USB) con el cero del L298N. Sin él, el módulo no
+   interpreta las señales de 3,3V y los motores no arrancan. Si no entraran los
+   dos cables en el tornillo, puede salir del borne − de la fuente: es el mismo
+   punto eléctrico.
 
    ⚠️ Quitar los jumpers de ENA y ENB (usamos PWM por pin).
    ⚠️ DEJAR puesto el jumper del regulador de 5V (sólo se saca con más de 12V).

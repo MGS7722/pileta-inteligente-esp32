@@ -234,42 +234,42 @@ en la placa y **el del medio siempre es GND**:
         └────┬────┴────┬────┴────┬────┘
              │         │         └──  NO SE CONECTA NADA (es una SALIDA)
              │         │
-             │         └──  el − (negro) de la fuente SLAVE
+             │         └──  DOS cables juntos en este mismo tornillo:
+             │                 1) el − (negro) de la fuente SLAVE
+             │                 2) un cable al riel GND de la protoboard
              │
              └──  el + (rojo) de la fuente SLAVE (8V)
 ```
 
-**Al módulo llegan sólo 2 cables**: el tercer tornillo (+5V) queda vacío. Por eso la cuenta de
-"3 tornillos = 3 cables" no cierra.
+**Son sólo 2 tornillos con cable, y en uno de ellos entran 2 cables.** Por eso la cuenta de
+"3 tornillos = 3 cables" no cierra: el tercer tornillo (+5V) queda vacío.
 
 29. **Cable** → **+ (rojo)** de la fuente SLAVE (8V) → al tornillo **+12V**.
     *(el tornillo se llama "+12V" pero acepta de 7 a 12V: le ponemos 8V)*
 30. **Cable** → **− (negro)** de la fuente SLAVE (8V) → al tornillo **GND**.
-31. **Cable** → del **borne − (negro) de la fuente SLAVE** — el mismo borne del cable
-    anterior — → al **riel GND** de la protoboard.
+31. **Cable** → del **mismo tornillo GND** (junto al anterior) → al **riel GND** de la
+    protoboard.
 
 Este último cable es el **GND común** y es imprescindible: sin él los motores no arrancan.
+
+> 💡 **Cómo entran los dos cables en el tornillo:** pelá 8-10 mm de cada uno, juntá las dos
+> puntas y torcelas como si fueran un solo cable, y recién ahí apretá el tornillo. Después
+> tirá suave de cada uno **por separado** para confirmar que ninguno quedó sólo apoyado.
+>
+> Si en tu módulo no entran los dos, se puede sacar el cable 31 del **borne − de la fuente**
+> en vez del tornillo: como el tornillo y el borne ya están unidos por el cable 30, son el
+> mismo punto eléctrico y da exactamente lo mismo.
 
 > ### ⚠️ El cable 31 no es de alimentación: es el que hace que se entiendan
 > El ESP32 está alimentado por **USB** y el L298N por **la fuente**: cada uno tiene su propio
 > cero. Cuando el ESP32 manda una señal de 3,3V, la cuenta desde SU cero; si el L298N escucha
-> contando desde OTRO cero, no interpreta nada. El cable 31 une los dos ceros.
+> contando desde OTRO cero, no interpreta nada.
 >
 > ```
 >    ESP32 ──señal de 3,3V──► L298N        ¿desde qué cero mide cada uno?
 >      │                        │
 >      └── USB (cero A)         └── fuente (cero B)     ← sin unir: no funciona
 > ```
->
-> **Los dos ceros se pueden unir en cualquiera de las dos puntas** — el tornillo GND del L298N
-> y el borne − de la fuente ya están unidos por el cable 30, así que da lo mismo de dónde
-> salga el cable 31. Sale del **borne de la fuente** porque ahí entran dos cables cómodos (el
-> poste tiene agujero pasante y capuchón a rosca); meter dos cables en el tornillito del
-> módulo es incómodo y quedan flojos.
->
-> Si igual preferís sacarlo del módulo: pelá 8-10 mm de cada cable, torcé las dos puntas
-> juntas como si fueran una sola y ahí apretá el tornillo. Después tirá suave de cada uno para
-> confirmar que ninguno se salió.
 
 > 🚫 **Lo que NO hay que hacer: llevar el negro de la fuente al riel de la protoboard y de ahí
 > al L298N.** Parece lo mismo, pero así toda la corriente de los motores (más de 1A en cada
