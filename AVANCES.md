@@ -31,6 +31,9 @@
 - [x] Integrado a Telegram: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar (+ aviso al terminar)
 - [x] Pines asignados y documentados en CONEXIONES.md
 - [x] Alimentación resuelta: fuente regulable del laboratorio a ~8V (sin LM2596 ni resistencias extra)
+- [x] Cableado auditado contra la documentación oficial y pines reasignados a los "tranquilos"
+      (ENB → GPIO18, fin de carrera abierto → GPIO19) — 2026-08-06
+- [x] Comandos `/motor_a` y `/motor_b` para probar un motor solo, sin fines de carrera
 - [ ] Montar el mecanismo físico y conectar L298N + motores + fines de carrera
 - [ ] Probar en hardware (calibrar velocidad y direcciones de giro)
 
@@ -154,9 +157,12 @@ alfa de subida de la base 0.02 → **0.008**.
    147 y dejó el umbral en 192, declarando "sin música" con música sonando. Bajar el alfa
    lo mitiga pero no lo resuelve — es estructural del filtro exponencial. **Pendiente**:
    comparar contra el promedio del último segundo (detección de ritmo por energía).
-5. 🟡 **GPIO5 es pin de strapping** y lo usa el fin de carrera ABIERTO. Debe estar en HIGH
-   durante el boot: si el cobertor queda abierto (fin de carrera presionado) y se corta la
-   luz, el ESP32 no vuelve a arrancar. **Pendiente**: mover ese fin de carrera de pin.
+5. 🟡 **GPIO5 es pin de strapping** y lo usa el fin de carrera ABIERTO. **Pendiente**: mover
+   ese fin de carrera de pin. *(Corrección del 2026-08-06, parte 2: la consecuencia anotada
+   acá —"el ESP32 no vuelve a arrancar"— resultó ser INEXACTA. Según la documentación oficial
+   de Espressif, GPIO5 sólo fija el "timing del esclavo SDIO", que este proyecto no usa; el
+   modo de arranque lo deciden GPIO0 y GPIO2. La placa arrancaba igual. El pin se movió de
+   todos modos, por los motivos reales que están en la entrada de esa sesión.)*
 6. 🟡 **Los pines GPIO6–11 (SD0-SD3, CMD, CLK) son de la memoria flash.** En las placas de
    38 pines están expuestos en el header; un cable ahí y el ESP32 no arranca. Agregado al
    checklist de cableado.
@@ -178,6 +184,73 @@ frecuencias que analizar. Los 8 LEDs se desconectaron: se reemplazan por la tira
 #### Atribución por modelo (sesión 2026-08-06)
 - **Opus 5**: toda la sesión — instrumentación `/trace`, captura y análisis de los datos
   del sensor, recalibración, diagnóstico de las 6 fallas, corrección del relé y los docs.
+
+### Sesión 2026-08-06 (parte 2) — Auditoría del cableado de motores, antes de conectarlos
+
+Objetivo: dejar el sistema del cobertor listo para conectar y probar en el taller. Se auditó
+`CABLEADO-PASO-A-PASO.md` completo contra la documentación oficial de Espressif, la del
+L298N y las especificaciones de los motores.
+
+**Reasignación de 4 pines (sin componentes nuevos ni funciones perdidas)**
+
+Los pines del cobertor no podían quedar en pines que el ESP32 usa mientras arranca: del otro
+lado hay motores. Se intercambiaron con dos colores de LED (que hoy están desconectados,
+porque los reemplaza la tira WS2812):
+
+| Señal | Antes | Ahora | Motivo |
+|---|---|---|---|
+| L298N ENB (motor B) | GPIO14 | **GPIO18** | GPIO14 emite un pulso al arrancar → habilita el puente H antes de que el programa ponga orden: tirón del motor en cada encendido |
+| Fin de carrera ABIERTO | GPIO5 | **GPIO19** | GPIO5 es pin de arranque (strapping) y además pulsa al encender: la posición de la lona no debe influir en la configuración del chip, ni el pulso descargar contra un contacto a masa |
+| LEDs azules | GPIO18 | **GPIO14** | Un LED que destella al arrancar es inofensivo |
+| LEDs blancos | GPIO19 | **GPIO5** | Ídem (el blanco tiene tensión de encendido alta: no altera la lectura del pin al arrancar) |
+
+**Dato corregido**: la bitácora afirmaba que con el fin de carrera en GPIO5 presionado "el
+ESP32 no vuelve a arrancar". La documentación oficial de Espressif lo desmiente: GPIO5 sólo
+elige el *timing del esclavo SDIO* (no usado acá); el modo de arranque lo deciden GPIO0 y
+GPIO2, y GPIO12 es el verdaderamente peligroso (fija la tensión de la flash). El cambio se
+hizo igual, pero por los motivos correctos.
+
+**Dos bugs de concurrencia encontrados al auditar el código del cobertor** — nacieron cuando
+Telegram se mudó al núcleo 0 y sólo se disparan con el cobertor en uso:
+1. 🔴 `cobertorAbrir()` y `cobertorCerrar()` escribían el estado ANTES del reloj del
+   movimiento. El loop, corriendo en el otro núcleo, podía ver el estado nuevo junto al reloj
+   del movimiento anterior y cortar en el acto "por seguridad". Ahora el estado se escribe
+   último: cuando el loop lo ve, ya está todo listo.
+2. 🔴 `chatCobertor`, `avisoTexto` y `avisoChat` eran `String` compartidos entre los dos
+   núcleos — dos núcleos tocando el heap del mismo String corrompen memoria y provocan
+   reinicios inexplicables. Pasaron a buffers de tamaño fijo con un único escritor por
+   variable. Las variables compartidas del cobertor quedaron `volatile`.
+
+**Comandos nuevos `/motor_a` y `/motor_b`**: mueven UN motor durante 2 s ignorando los fines
+de carrera, para verificar cableado y sentido de giro con los motores desacoplados, antes de
+montar el mecanismo.
+
+**Correcciones del documento de cableado** (además de los pines):
+- Los fines de carrera se cableaban "cualquier pata": ahora se especifica **COM a GND y NO al
+  pin** (con NC, el sistema arranca creyendo que está en el tope y no se mueve nunca), más un
+  método para verificarlos con `/status` sin mover motores.
+- Se agregó que el **jumper del regulador de 5V del L298N va PUESTO** (sólo se saca con más
+  de 12V) — antes sólo se hablaba de los de ENA/ENB.
+- Se prohibió explícitamente conectar el **borne +5V del L298N** al 5V/VIN del ESP32: con el
+  USB puesto quedan dos fuentes enfrentadas.
+- **Límite de corriente concreto** para la prueba (~1A en la fuente SLAVE) en vez de "la
+  perilla a la mitad": los motores pueden llegar a 1,6A cada uno con el eje trabado.
+- Protocolo de prueba completo, del orden correcto: fuente → sketch → un motor por vez →
+  fines de carrera a dedo → movimiento completo → recién ahí acoplar el mecanismo.
+- El paso de los 8 LEDs quedó marcado como **en pausa** (están desconectados) con los pines
+  nuevos, por si hay que rearmarlos antes de que llegue la tira.
+
+**Gate**: compilado con `arduino-cli` (core esp32 3.3.10) → **sin errores**, 83% de flash y
+15% de RAM. El único warning es el conocido de LiquidCrystal I2C (declara arquitectura AVR).
+
+**Pendiente de la prueba en hardware**: verificar sentido de giro de cada motor, que los
+fines de carrera corten, y ajustar `VELOCIDAD_COBERTOR` (hoy 180/255) si con la lona puesta
+a los motores les cuesta arrancar.
+
+#### Atribución por modelo (sesión 2026-08-06, parte 2)
+- **Opus 5**: auditoría del cableado, investigación en documentación oficial, reasignación de
+  pines, arreglo de los dos bugs de concurrencia, comandos de prueba y reescritura de los
+  documentos.
 
 #### Atribución por modelo (sesión 2026-07-23)
 - **Opus 4.8**: /diag, pico a pico + DC removal, luces binarias, efecto en negativo (commits

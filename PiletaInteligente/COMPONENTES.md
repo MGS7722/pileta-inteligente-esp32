@@ -43,10 +43,10 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | GPIO26 | S1 | Relé del calentador |
 | GPIO21 | GEN | LCD SDA (I2C) |
 | GPIO22 | GEN | LCD SCL (I2C) |
-| GPIO16 | S2 | LED 1 |
-| GPIO17 | S2 | LED 2 |
-| GPIO18 | S2 | LED 3 |
-| GPIO19 | S2 | LED 4 |
+| GPIO16 | S2 | LEDs verdes |
+| GPIO17 | S2 | LEDs rojos |
+| GPIO14 | S2 | LEDs azules (pin que pulsa al arrancar: inofensivo para un LED) |
+| GPIO5  | S2 | LEDs blancos (ídem) |
 | GPIO34 | S2 | Sensor de sonido 1 (AO) |
 | GPIO35 | S2 | Sensor de sonido 2 (DO) |
 
@@ -62,8 +62,14 @@ en **`CONEXIONES.md`**:
 | GPIO27 | L298N ENA — PWM motor A |
 | GPIO32 | L298N IN3 (motor B) |
 | GPIO33 | L298N IN4 (motor B) |
-| GPIO14 | L298N ENB — PWM motor B |
+| GPIO18 | L298N ENB — PWM motor B |
 | GPIO23 | Fin de carrera "cerrado" (pull-up interno) |
-| GPIO5  | Fin de carrera "abierto" (pull-up interno) |
+| GPIO19 | Fin de carrera "abierto" (pull-up interno) |
 
-Quedan libres: GPIO36, GPIO39 y más.
+> Los pines del cobertor son todos "tranquilos" a propósito: no hacen nada mientras el ESP32
+> arranca. Los que sí pulsan al encender (GPIO5 y GPIO14) quedaron para los LEDs, donde un
+> destello no tiene consecuencias. **Antes de mover cualquier pin, leer la regla 4 de
+> `CONEXIONES.md`.**
+
+Quedan libres: GPIO36, GPIO39 (sólo entrada, sin pull-up interno: necesitan resistencia
+externa si se usan para un pulsador) y los de la memoria flash GPIO6–11, que **no se tocan**.

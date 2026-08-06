@@ -163,6 +163,9 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/cobertor_abrir` — destapar la pileta
 - `/cobertor_cerrar` — tapar la pileta
 - `/cobertor_parar` — frenar el cobertor
+- `/motor_a` / `/motor_b` — prueba de taller: mueve **un** motor 2 segundos, sin mirar los
+  fines de carrera. Para verificar cableado y sentido de giro con los motores desacoplados
+  (ver `CABLEADO-PASO-A-PASO.md`)
 
 **Información**
 - `/status` — estado general

@@ -32,13 +32,13 @@
 //     GPIO22  -> LCD SCL (I2C)
 //     GPIO16  -> LEDs VERDES  (los 2, uno por lado)
 //     GPIO17  -> LEDs ROJOS
-//     GPIO18  -> LEDs AZULES
-//     GPIO19  -> LEDs BLANCOS
+//     GPIO14  -> LEDs AZULES
+//     GPIO5   -> LEDs BLANCOS
 //     GPIO34  -> Sensor de sonido (analógico)
 //     GPIO13,25,27 -> L298N motor A (IN1, IN2, ENA-PWM)
-//     GPIO32,33,14 -> L298N motor B (IN3, IN4, ENB-PWM)
+//     GPIO32,33,18 -> L298N motor B (IN3, IN4, ENB-PWM)
 //     GPIO23  -> Fin de carrera CERRADO (con pull-up interno)
-//     GPIO5   -> Fin de carrera ABIERTO (con pull-up interno)
+//     GPIO19  -> Fin de carrera ABIERTO (con pull-up interno)
 // ============================================================
 
 #include "config.h"
@@ -65,24 +65,47 @@
 // --- Luces disco (Sistema 2) ---
 // 8 LEDs = 4 colores x 2 lados. Cada pin maneja los 2 LEDs del mismo
 // color (uno de cada lado), cada LED con su resistencia de 220 ohm.
+//
+// GPIO5 y GPIO14 emiten un pulso mientras el ESP32 arranca, ANTES de que
+// corra este programa. Un LED que destella medio segundo en el arranque no
+// molesta a nadie; por eso los colores viven en esos dos pines y el cobertor
+// se quedó con los pines "tranquilos" (ver el bloque del cobertor).
 #define LED_VERDE   16
 #define LED_ROJO    17
-#define LED_AZUL    18
-#define LED_BLANCO  19
+#define LED_AZUL    14
+#define LED_BLANCO  5
 #define MIC_PIN     34    // Sensor de sonido 1, salida AO. ADC1 (no usar ADC2: choca con WiFi).
 #define MIC_DO_PIN  35    // Sensor de sonido 2, salida DO (golpes por hardware).
                           // El módulo 2 se alimenta a 3.3V: así su DO nunca supera
                           // los 3.3V que tolera el ESP32. NO alimentarlo con 5V.
 
 // --- Cobertor (Sistema 3): L298N + 2 motores + 2 fines de carrera ---
+//
+// Los pines del cobertor son los únicos que NO pueden hacer nada raro durante
+// el arranque, porque del otro lado hay motores. El ESP32 tiene dos grupos de
+// pines problemáticos y ninguno de los dos toca este sistema:
+//
+//   - GPIO5 y GPIO14 emiten un pulso mientras el chip arranca. Con el ENB del
+//     L298N ahí, ese pulso habilita el puente H antes de que el programa haya
+//     puesto orden: el motor puede pegar un tirón en cada encendido. Por eso
+//     el ENB del motor B se mudó de GPIO14 a GPIO18.
+//   - GPIO5 es además pin de arranque (strapping): el chip lee su nivel al
+//     encender. El fin de carrera ABIERTO lo conectaba a masa, o sea que la
+//     posición del cobertor decidía un ajuste interno del chip. Por eso se
+//     mudó a GPIO19. (Verificado en la documentación de Espressif: GPIO5 fija
+//     el "timing del esclavo SDIO", que este proyecto no usa, así que la placa
+//     arrancaba igual — pero un pin de arranque no debe quedar atado a dónde
+//     está la lona, y el pulso contra un contacto a masa tampoco es sano.)
+//
+// GPIO18 y GPIO19 quedaron libres al mudar dos colores de LED a esos pines.
 #define MOTOR_A_IN1 13    // Motor A = lado del rodillo de la lona
 #define MOTOR_A_IN2 25
 #define MOTOR_A_EN  27    // PWM velocidad motor A
 #define MOTOR_B_IN3 32    // Motor B = lado que tira de los cables
 #define MOTOR_B_IN4 33
-#define MOTOR_B_EN  14    // PWM velocidad motor B
+#define MOTOR_B_EN  18    // PWM velocidad motor B
 #define FC_CERRADO  23    // Fin de carrera: cobertor cerrado  (pull-up INTERNO)
-#define FC_ABIERTO  5     // Fin de carrera: cobertor abierto  (pull-up INTERNO)
+#define FC_ABIERTO  19    // Fin de carrera: cobertor abierto  (pull-up INTERNO)
 
 // ============================================================
 //   AJUSTES DEL CALENTADOR
@@ -152,6 +175,10 @@ const int FLANCOS_DO_MAXIMO = 8;
 const int VELOCIDAD_COBERTOR = 180;             // PWM 0-255 (más bajo = más lento y suave)
 const unsigned long TIMEOUT_COBERTOR = 30000;    // Corte de seguridad si no llega al tope (ms)
 
+// Prueba de taller (/motor_a y /motor_b): cuánto gira un motor solo, para
+// verificar cableado y sentido de giro con el mecanismo todavía desarmado.
+const unsigned long DURACION_PRUEBA_MOTOR_MS = 2000;
+
 // ============================================================
 //   TIEMPOS
 // ============================================================
@@ -212,10 +239,26 @@ unsigned long ultimaTraza = 0;
 const unsigned long INTERVALO_TRAZA_MS = 100;
 
 // --- Cobertor ---
-enum EstadoCobertor { COB_PARADO, COB_ABRIENDO, COB_CERRANDO };
-EstadoCobertor estadoCobertor = COB_PARADO;
-unsigned long inicioMovimientoCobertor = 0;
-String chatCobertor = "";   // A quién avisarle por Telegram cuando termina el movimiento
+// Los mensajes que cruzan de un núcleo al otro viajan en buffers de tamaño fijo,
+// nunca en un String: dos núcleos tocando el heap del mismo String terminan en
+// memoria corrupta y en reinicios imposibles de explicar.
+const size_t CHAT_ID_MAXIMO = 32;    // los chat_id de Telegram son numéricos
+const size_t AVISO_MAXIMO   = 160;   // alcanza de sobra para los avisos del cobertor
+
+// COB_PRUEBA es el modo de taller: mueve UN motor unos segundos sin mirar los
+// fines de carrera, para verificar cableado y sentido de giro (ver probarMotor).
+enum EstadoCobertor { COB_PARADO, COB_ABRIENDO, COB_CERRANDO, COB_PRUEBA };
+
+// Las órdenes del cobertor llegan por Telegram (núcleo 0) y las vigila el loop
+// (núcleo 1). `volatile` le prohíbe al compilador guardarse estas variables en un
+// registro dentro del loop: sin eso, el loop podría no enterarse nunca de que
+// llegó una orden nueva.
+volatile EstadoCobertor estadoCobertor = COB_PARADO;
+volatile unsigned long  inicioMovimientoCobertor = 0;
+volatile char motorEnPrueba = '-';   // 'A' o 'B' mientras dura COB_PRUEBA
+
+// A quién avisarle por Telegram cuando termina el movimiento.
+char chatCobertor[CHAT_ID_MAXIMO] = "";
 
 // --- Lectura NO BLOQUEANTE del sensor de temperatura ---
 // Con el modo por defecto de la librería, requestTemperatures() se queda esperando
@@ -241,8 +284,8 @@ bool telegramListo = false;
 // El flag se levanta DESPUÉS de escribir el texto y se baja DESPUÉS de leerlo,
 // para que la tarea nunca lea un mensaje a medio escribir.
 volatile bool avisoPendiente = false;
-String avisoTexto;
-String avisoChat;
+char avisoTexto[AVISO_MAXIMO];
+char avisoChat[CHAT_ID_MAXIMO];
 
 // ============================================================
 //   SETUP
@@ -652,33 +695,72 @@ void cobertorFrenar() {
 }
 
 // Empieza a abrir: el rodillo enrolla la lona, el otro lado suelta cable.
+//
+// OJO con el orden de las dos primeras líneas: la orden nace en la tarea de
+// Telegram (núcleo 0) y el loop la vigila desde el otro núcleo. Si el estado se
+// escribiera primero, el loop podría verlo con el reloj del movimiento anterior
+// —de hace varios minutos— y cortar en el acto "por seguridad". Primero el
+// reloj, último el estado: cuando el loop ve el estado nuevo, ya está todo listo.
 void cobertorAbrir() {
-  estadoCobertor = COB_ABRIENDO;
   inicioMovimientoCobertor = millis();
   motorB_libre();
   motorA_enrollar();
+  estadoCobertor = COB_ABRIENDO;
   Serial.println(">>> Cobertor: ABRIENDO");
 }
 
 // Empieza a cerrar: los cables tiran la lona, el rodillo la suelta.
 void cobertorCerrar() {
-  estadoCobertor = COB_CERRANDO;
   inicioMovimientoCobertor = millis();
   motorA_libre();
   motorB_tirar();
+  estadoCobertor = COB_CERRANDO;
   Serial.println(">>> Cobertor: CERRANDO");
 }
 
 void cobertorParar() {
   estadoCobertor = COB_PARADO;
+  motorEnPrueba = '-';
   cobertorFrenar();
   Serial.println(">>> Cobertor: PARADO");
+}
+
+// --- Prueba de taller: un motor solo, unos segundos ---
+//
+// Sirve para verificar el cableado del L298N y el sentido de giro ANTES de montar
+// el mecanismo: no mira los fines de carrera (todavía no están puestos) y frena
+// sola a los DURACION_PRUEBA_MOTOR_MS. Usarla con los motores DESACOPLADOS.
+void probarMotor(char cual) {
+  inicioMovimientoCobertor = millis();
+
+  if (cual == 'A') {
+    motorB_libre();
+    motorA_enrollar();
+  } else {
+    motorA_libre();
+    motorB_tirar();
+  }
+
+  motorEnPrueba  = cual;
+  estadoCobertor = COB_PRUEBA;   // último, por lo mismo que en cobertorAbrir()
+
+  Serial.print(">>> Prueba del motor ");
+  Serial.println(cual);
 }
 
 // Máquina de estados: se llama en cada loop. Frena al llegar al tope
 // o si pasa demasiado tiempo (seguridad).
 void actualizarCobertor() {
   if (estadoCobertor == COB_PARADO) return;
+
+  // Prueba de taller: frena sola al cumplirse el tiempo. No mira los fines de
+  // carrera a propósito (se usa cuando todavía no están montados).
+  if (estadoCobertor == COB_PRUEBA) {
+    if (millis() - inicioMovimientoCobertor >= DURACION_PRUEBA_MOTOR_MS) {
+      cobertorParar();
+    }
+    return;
+  }
 
   if (estadoCobertor == COB_ABRIENDO && finDeCarreraTocado(FC_ABIERTO)) {
     cobertorParar();
@@ -699,15 +781,23 @@ void actualizarCobertor() {
   }
 }
 
+// Guarda a quién hay que avisarle cuando termine el movimiento. Se llama SIEMPRE
+// desde la tarea de Telegram, que es el único escritor de chatCobertor.
+void recordarChatDelCobertor(const String &chat_id) {
+  snprintf(chatCobertor, sizeof(chatCobertor), "%s", chat_id.c_str());
+}
+
 // Deja el aviso en el buzón para que lo mande la tarea de Telegram. No envía acá
 // mismo porque esto corre en el loop (núcleo 1) y `bot` es de la otra tarea.
-void avisarCobertor(String msg) {
-  if (chatCobertor.length() > 0 && !avisoPendiente) {
-    avisoChat  = chatCobertor;
-    avisoTexto = msg;
-    avisoPendiente = true;   // último: recién ahora el mensaje está completo
-  }
-  chatCobertor = "";
+//
+// El loop sólo LEE chatCobertor. Mantener un solo escritor por variable es lo que
+// hace segura la conversación entre los dos núcleos sin necesidad de candados.
+void avisarCobertor(const char *msg) {
+  if (chatCobertor[0] == '\0' || avisoPendiente) return;
+
+  snprintf(avisoChat,  sizeof(avisoChat),  "%s", chatCobertor);
+  snprintf(avisoTexto, sizeof(avisoTexto), "%s", msg);
+  avisoPendiente = true;   // último: recién ahora el mensaje está completo
 }
 
 // ============================================================
@@ -860,7 +950,7 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     if (finDeCarreraTocado(FC_ABIERTO)) {
       bot.sendMessage(chat_id, "El cobertor ya está abierto.", "");
     } else {
-      chatCobertor = chat_id;
+      recordarChatDelCobertor(chat_id);
       cobertorAbrir();
       bot.sendMessage(chat_id, "Abriendo el cobertor... te aviso cuando termine.", "");
     }
@@ -869,15 +959,32 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     if (finDeCarreraTocado(FC_CERRADO)) {
       bot.sendMessage(chat_id, "El cobertor ya está cerrado.", "");
     } else {
-      chatCobertor = chat_id;
+      recordarChatDelCobertor(chat_id);
       cobertorCerrar();
       bot.sendMessage(chat_id, "Cerrando el cobertor... te aviso cuando termine.", "");
     }
   }
   else if (text == "/cobertor_parar") {
     cobertorParar();
-    chatCobertor = "";
+    chatCobertor[0] = '\0';   // lo paré a mano: no hace falta avisar nada
     bot.sendMessage(chat_id, "Cobertor detenido.", "");
+  }
+
+  // --- Prueba de los motores (taller) ---
+  else if (text == "/motor_a" || text == "/motor_b") {
+    char cual = (text == "/motor_a") ? 'A' : 'B';
+
+    if (estadoCobertor == COB_ABRIENDO || estadoCobertor == COB_CERRANDO) {
+      bot.sendMessage(chat_id, "El cobertor se está moviendo. Frenalo con /cobertor_parar "
+                               "antes de probar un motor suelto.", "");
+    } else {
+      probarMotor(cual);
+      bot.sendMessage(chat_id, String("Probando el motor ") + cual + " durante " +
+                               String(DURACION_PRUEBA_MOTOR_MS / 1000) + " segundos.\n" +
+                               "Hacelo con los motores DESACOPLADOS del mecanismo. "
+                               "Si gira para el lado equivocado, invertí sus dos cables "
+                               "en el L298N (OUT1<->OUT2 o OUT3<->OUT4).", "");
+    }
   }
 
   // --- Consultas ---
@@ -955,7 +1062,8 @@ String armarAyuda(String from_name) {
   s += "COBERTOR:\n";
   s += "/cobertor_abrir - destapar la pileta\n";
   s += "/cobertor_cerrar - tapar la pileta\n";
-  s += "/cobertor_parar - frenar el cobertor\n\n";
+  s += "/cobertor_parar - frenar el cobertor\n";
+  s += "/motor_a, /motor_b - probar un motor solo (taller)\n\n";
   s += "INFORMACIÓN:\n";
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
@@ -1090,6 +1198,7 @@ String modoLucesTexto() {
 String estadoCobertorTexto() {
   if (estadoCobertor == COB_ABRIENDO) return "abriendo...";
   if (estadoCobertor == COB_CERRANDO) return "cerrando...";
+  if (estadoCobertor == COB_PRUEBA)   return String("probando el motor ") + (char)motorEnPrueba;
   if (finDeCarreraTocado(FC_CERRADO)) return "cerrado";
   if (finDeCarreraTocado(FC_ABIERTO)) return "abierto";
   return "parado (posición intermedia)";

@@ -40,6 +40,7 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Calentador: /calentador_auto, /calentador_on, /calentador_off
 - Luces: /luces_auto, /luces_on, /luces_off
 - Cobertor: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar
+- Prueba de taller: /motor_a, /motor_b (mueven un motor solo 2 segundos, sin fines de carrera)
 - Ajustes: /temperatura 28 (objetivo, guardado en NVS), /sonido_mixto | /sonido_ao | /sonido_do
 - Consultas: /status, /temp, /audio, /diag, /trace, /ip
 
@@ -83,14 +84,18 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 | GPIO22 | LCD SCL (I2C) |
 | GPIO16 | LEDs verdes (luces disco) |
 | GPIO17 | LEDs rojos (luces disco) |
-| GPIO18 | LEDs azules (luces disco) |
-| GPIO19 | LEDs blancos (luces disco) |
+| GPIO14 | LEDs azules (luces disco) |
+| GPIO5  | LEDs blancos (luces disco) |
 | GPIO34 | Sensor de sonido 1 — salida AO (analógica, ADC1). Módulo alimentado a 5V/VIN |
 | GPIO35 | Sensor de sonido 2 — salida DO (golpes por hardware). Módulo a 3.3V |
 | GPIO13 / GPIO25 / GPIO27 | L298N motor A: IN1 / IN2 / ENA (PWM) |
-| GPIO32 / GPIO33 / GPIO14 | L298N motor B: IN3 / IN4 / ENB (PWM) |
-| GPIO23 | Fin de carrera cerrado |
-| GPIO5  | Fin de carrera abierto |
+| GPIO32 / GPIO33 / GPIO18 | L298N motor B: IN3 / IN4 / ENB (PWM) |
+| GPIO23 | Fin de carrera cerrado (COM a GND, NO al pin) |
+| GPIO19 | Fin de carrera abierto (COM a GND, NO al pin) |
+
+> Los pines del cobertor evitan a propósito los que el ESP32 usa al arrancar (GPIO5 y GPIO14
+> emiten un pulso al encender; con un driver de motor del otro lado eso es un tirón). Esos dos
+> quedaron para LEDs. Detalle en la regla 4 de `PiletaInteligente/CONEXIONES.md`.
 
 > El croquis de conexiones cable por cable está en `PiletaInteligente/CABLEADO-PASO-A-PASO.md`
 > y `PiletaInteligente/CONEXIONES.md`.

@@ -9,6 +9,13 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 > 3. El **sensor de sonido 1 (AO) se alimenta a 5V/VIN**: el módulo pide 4-6V y a 3.3V daba una
 >    señal demasiado débil. Verificado con `/diag`: el Máximo debe quedar **por debajo de 3000**
 >    para no dañar el GPIO34. El **módulo 2 (DO), en cambio, va a 3.3V** — nunca a 5V.
+> 4. **Los pines no son intercambiables.** Algunos del ESP32 hacen cosas mientras el chip
+>    arranca (GPIO5 y GPIO14 emiten un pulso; GPIO5, GPIO0, GPIO2, GPIO12 y GPIO15 se leen al
+>    encender para configurar el chip). Por eso el cobertor usa sólo pines "tranquilos": del
+>    otro lado hay motores y un pulso suelto significa un tirón. Los LEDs, en cambio, viven
+>    tranquilos en GPIO5 y GPIO14: un destello al arrancar no molesta a nadie. **Si algún día
+>    hay que reasignar un pin, primero revisar esto** (referencia: pines de *strapping* y de
+>    boot en la documentación de Espressif).
 
 ---
 
@@ -22,8 +29,8 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 | GPIO22 | Compartido | LCD — SCL |
 | GPIO16 | Luces | LEDs VERDES (los 2, cada uno con 220Ω) |
 | GPIO17 | Luces | LEDs ROJOS (los 2, cada uno con 220Ω) |
-| GPIO18 | Luces | LEDs AZULES (los 2, cada uno con 220Ω) |
-| GPIO19 | Luces | LEDs BLANCOS (los 2, cada uno con 220Ω) |
+| GPIO14 | Luces | LEDs AZULES (los 2, cada uno con 220Ω) |
+| GPIO5  | Luces | LEDs BLANCOS (los 2, cada uno con 220Ω) |
 | GPIO34 | Luces | Sensor de sonido 1 — salida analógica (AO) |
 | GPIO35 | Luces | Sensor de sonido 2 — salida digital (DO, golpes por hardware) |
 | GPIO13 | Cobertor | L298N — IN1 (motor A) |
@@ -31,9 +38,9 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 | GPIO27 | Cobertor | L298N — ENA (PWM motor A) |
 | GPIO32 | Cobertor | L298N — IN3 (motor B) |
 | GPIO33 | Cobertor | L298N — IN4 (motor B) |
-| GPIO14 | Cobertor | L298N — ENB (PWM motor B) |
-| GPIO23 | Cobertor | Fin de carrera CERRADO (otro extremo a GND) |
-| GPIO5  | Cobertor | Fin de carrera ABIERTO (otro extremo a GND) |
+| GPIO18 | Cobertor | L298N — ENB (PWM motor B) |
+| GPIO23 | Cobertor | Fin de carrera CERRADO (COM a GND, NO al pin) |
+| GPIO19 | Cobertor | Fin de carrera ABIERTO (COM a GND, NO al pin) |
 | 3.3V | — | DS18B20, sensor de sonido, pull-ups |
 | 5V (Vin) | — | LCD, módulo relé (lado lógico) |
 | GND | — | **común a todo** |
@@ -98,9 +105,9 @@ LEDs (por cada color, 2 LEDs: uno de cada lado de la pileta)
           └─[220Ω]──►|── GND     (LED verde  lado B)
    GPIO17 ──[220Ω]──►|── GND     (LED rojo   lado A)
           └─[220Ω]──►|── GND     (LED rojo   lado B)
-   GPIO18 ──[220Ω]──►|── GND     (LED azul   lado A)
+   GPIO14 ──[220Ω]──►|── GND     (LED azul   lado A)
           └─[220Ω]──►|── GND     (LED azul   lado B)
-   GPIO19 ──[220Ω]──►|── GND     (LED blanco lado A)
+   GPIO5  ──[220Ω]──►|── GND     (LED blanco lado A)
           └─[220Ω]──►|── GND     (LED blanco lado B)
 ```
 
@@ -116,9 +123,12 @@ L298N (control)                 L298N (potencia)
    ENA ──── GPIO27 (PWM)          +5V  ──── (jumper puesto: salida 5V lógica)
    IN3 ──── GPIO32
    IN4 ──── GPIO33                OUT1/OUT2 ──── Motor A (rodillo de la lona)
-   ENB ──── GPIO14 (PWM)          OUT3/OUT4 ──── Motor B (tira de los cables)
+   ENB ──── GPIO18 (PWM)          OUT3/OUT4 ──── Motor B (tira de los cables)
 
    ⚠️ Quitar los jumpers de ENA y ENB (usamos PWM por pin).
+   ⚠️ DEJAR puesto el jumper del regulador de 5V (sólo se saca con más de 12V).
+   🚫 El borne +5V del L298N NO se conecta: es una salida. Enchufarlo al 5V/VIN del
+      ESP32 con el USB puesto enfrenta dos fuentes y quema el regulador de la placa.
 
 Alimentación de los motores (son de 6V)
    ► OPCIÓN A (fuente de laboratorio REGULABLE — lo más simple):
@@ -132,12 +142,16 @@ Alimentación de los motores (son de 6V)
      Fuente12V(−) ── LM2596 IN− (GND)  LM2596 OUT− ── GND
      → Ajustar el LM2596 a ~7,5–8V con el tornillito ANTES de conectar los motores.
 
-Fines de carrera (interruptores de tope)
-   FC CERRADO:  GPIO23 ──── un borne ; otro borne ──── GND
-   FC ABIERTO:  GPIO5  ──── un borne ; otro borne ──── GND
-                (ambos usan la resistencia pull-up INTERNA del ESP32:
-                 no hace falta ninguna resistencia externa)
+Fines de carrera (interruptores de tope) — usar las patas COM y NO
+   FC CERRADO:  COM ──── GND  ;  NO ──── GPIO23
+   FC ABIERTO:  COM ──── GND  ;  NO ──── GPIO19
+                (la pata NC queda libre. Ambos usan la resistencia pull-up
+                 INTERNA del ESP32: no hace falta ninguna externa)
 ```
+
+- **Verificación sin mover motores:** mandá `/status` y mirá la línea "Cobertor". Apretando
+  cada fin de carrera con el dedo tiene que pasar de "parado (posición intermedia)" a
+  "cerrado" o "abierto". Si no cambia, el cable está en la pata NC en vez de la NO.
 
 - **Motor A** = lado del rodillo donde se enrolla la lona. **Motor B** = lado que tira de los cables.
 - El código ya hace que **cuando uno tira, el otro queda suelto** (no se traban).

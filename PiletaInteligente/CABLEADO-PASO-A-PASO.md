@@ -11,6 +11,36 @@ no te podés equivocar. Cada línea es UN cable.
 > **Antes de empezar:** ESP32 pinchado en el medio de la protoboard. Conviene usar las dos
 > filas de los costados de la protoboard como **riel de GND (−)** y **riel de 3.3V (+)**.
 
+> ### 🚨 Si venís a montar el COBERTOR (motores), leé esto primero
+> **Cambiaron 4 pines** respecto de la versión anterior de este documento. Los motores y los
+> fines de carrera se mudaron a pines que no hacen nada raro mientras el ESP32 arranca:
+>
+> | Qué | Antes | **Ahora** | Por qué |
+> |---|---|---|---|
+> | L298N **ENB** (motor B) | GPIO14 | **GPIO18** | GPIO14 tira un pulso al arrancar: podía hacer que el motor B pegue un tirón en cada encendido |
+> | **Fin de carrera ABIERTO** | GPIO5 | **GPIO19** | GPIO5 es pin de arranque: la posición de la lona no debe influir en cómo arranca el chip |
+> | LEDs **azules** | GPIO18 | **GPIO14** | Un LED que parpadea al arrancar no molesta a nadie |
+> | LEDs **blancos** | GPIO19 | **GPIO5** | Ídem |
+>
+> **Hay que cargar el sketch nuevo** (`PiletaInteligente.ino`) para que estos pines valgan.
+
+---
+
+## 📋 Mapa rápido de pines (para chequear de un vistazo)
+
+| Pin | Va conectado a |
+|---|---|
+| GPIO4 | DS18B20 (dato) + resistencia 4.7kΩ a 3.3V |
+| GPIO26 | Relé — IN |
+| GPIO21 / GPIO22 | LCD — SDA / SCL |
+| GPIO16 | LEDs verdes · GPIO17 LEDs rojos · **GPIO14** LEDs azules · **GPIO5** LEDs blancos |
+| GPIO34 | Sensor de sonido 1 — AO (módulo a 5V) |
+| GPIO35 | Sensor de sonido 2 — DO (módulo a 3.3V) |
+| GPIO13 / GPIO25 / GPIO27 | L298N — IN1 / IN2 / ENA (motor A) |
+| GPIO32 / GPIO33 / **GPIO18** | L298N — IN3 / IN4 / ENB (motor B) |
+| GPIO23 | Fin de carrera CERRADO |
+| **GPIO19** | Fin de carrera ABIERTO |
+
 ---
 
 ## PASO 0 — Preparar los rieles de la protoboard
@@ -72,10 +102,10 @@ El módulo relé tiene 3 pines de control: **VCC, GND, IN**.
 
 ---
 
-## PASO 4 — Sensor de sonido (el de las luces)
+## PASO 4 — Sensor de sonido 1 (volumen, canal analógico)
 
-El módulo de sonido tiene 3 pines: **VCC (o +), GND (o G), AO** (salida analógica).
-⚠️ Si tiene un 4º pin **DO**, ese NO se usa.
+El módulo tiene 4 pines: **VCC (o +), GND (o G), DO y AO**. De **este** módulo usamos el **AO**;
+su DO queda sin conectar.
 
 17. **Cable** → del pin **VCC/+** del sensor → al pin **VIN (5V)** del ESP32.
     *(este módulo pide 4-6V según su especificación; su salida AO es de nivel bajo
@@ -85,7 +115,29 @@ El módulo de sonido tiene 3 pines: **VCC (o +), GND (o G), AO** (salida analóg
 
 ---
 
-## PASO 5 — Las 8 luces LED (4 colores × 2 lados)
+## PASO 5 — Sensor de sonido 2 (detector de golpes por hardware)
+
+Es el módulo de sonido de repuesto (KY-037). ⚠️ Este va a **3.3V, NUNCA a 5V**
+(su salida DO llega al ESP32 y más de 3.3V lo dañaría).
+
+20. **Cable** → del pin **VCC/+** del módulo 2 → al **riel 3.3V**.
+21. **Cable** → del pin **GND/G** del módulo 2 → al **riel GND**.
+22. **Cable** → del pin **DO** del módulo 2 → al pin **GPIO35** del ESP32.
+    *(el pin AO del módulo 2 queda SIN conectar)*
+
+> El potenciómetro de ESTE módulo sí importa: fija el umbral del detector.
+> Cómo calibrarlo está en `PROTOCOLO-TALLER.md`.
+
+---
+
+## PASO 6 — Las 8 luces LED ⏸️ *(en pausa: se reemplazan por la tira WS2812)*
+
+> Los 8 LEDs están **desconectados** a propósito: los reemplaza una tira WS2812 que todavía
+> no llegó. Este paso queda acá por si hay que volver a armarlos mientras tanto — **ojo que
+> el azul y el blanco cambiaron de pin**.
+>
+> Cuando llegue la tira: **alimentación propia de 5V**, nunca desde el ESP32; sólo se comparte
+> el **GND**.
 
 Son 8 LEDs: por cada color hay 2 (uno para cada lado de la pileta). Cada LED lleva
 **su propia resistencia de 220Ω** en la pata larga (+).
@@ -93,89 +145,144 @@ Son 8 LEDs: por cada color hay 2 (uno para cada lado de la pileta). Cada LED lle
 **Regla para CADA LED:** la pata larga va a una resistencia 220Ω, y de la resistencia
 sale un cable al pin del ESP32 que le toca por color. La pata corta va al riel GND.
 
-### LEDs VERDES → van al GPIO16
-20. LED verde lado A: **pata larga** → [resistencia 220Ω] → **GPIO16**.
-21. LED verde lado A: **pata corta** → **riel GND**.
-22. LED verde lado B: **pata larga** → [resistencia 220Ω] → **GPIO16** (mismo pin).
-23. LED verde lado B: **pata corta** → **riel GND**.
-
-### LEDs ROJOS → van al GPIO17
-24. LED rojo lado A: **pata larga** → [220Ω] → **GPIO17**.
-25. LED rojo lado A: **pata corta** → **riel GND**.
-26. LED rojo lado B: **pata larga** → [220Ω] → **GPIO17**.
-27. LED rojo lado B: **pata corta** → **riel GND**.
-
-### LEDs AZULES → van al GPIO18
-28. LED azul lado A: **pata larga** → [220Ω] → **GPIO18**.
-29. LED azul lado A: **pata corta** → **riel GND**.
-30. LED azul lado B: **pata larga** → [220Ω] → **GPIO18**.
-31. LED azul lado B: **pata corta** → **riel GND**.
-
-### LEDs BLANCOS → van al GPIO19
-32. LED blanco lado A: **pata larga** → [220Ω] → **GPIO19**.
-33. LED blanco lado A: **pata corta** → **riel GND**.
-34. LED blanco lado B: **pata larga** → [220Ω] → **GPIO19**.
-35. LED blanco lado B: **pata corta** → **riel GND**.
+| Color | Pin | LEDs |
+|---|---|---|
+| Verdes | **GPIO16** | lado A y lado B, cada uno con su 220Ω |
+| Rojos | **GPIO17** | ídem |
+| Azules | **GPIO14** ⬅️ cambió | ídem |
+| Blancos | **GPIO5** ⬅️ cambió | ídem |
 
 ---
 
-## PASO 6 — Cobertor: el driver L298N
+## PASO 7 — Cobertor: el driver L298N
 
 El L298N tiene 6 pines de control (IN1, IN2, IN3, IN4, ENA, ENB) y bornes de fuerza.
-⚠️ **Sacale los 2 jumpers de ENA y ENB** (los capuchones plásticos), porque usamos PWM.
+
+⚠️ **Antes de cablear, dos jumpers:**
+- **Sacá los 2 jumpers de ENA y ENB** (los capuchones plásticos). Con el jumper puesto el
+  motor está siempre habilitado y no hay control de velocidad.
+- **Dejá puesto el jumper del regulador de 5V** (el que está al lado de los bornes). Con él
+  puesto, el módulo se fabrica sus propios 5V para la lógica. *Sólo se saca si alimentás el
+  L298N con más de 12V — nosotros usamos 8V, así que va puesto.*
 
 ### Cables de señal (del ESP32 al L298N)
-36. **Cable** → **GPIO13** del ESP32 → pin **IN1** del L298N.
-37. **Cable** → **GPIO25** del ESP32 → pin **IN2** del L298N.
-38. **Cable** → **GPIO27** del ESP32 → pin **ENA** del L298N.
-39. **Cable** → **GPIO32** del ESP32 → pin **IN3** del L298N.
-40. **Cable** → **GPIO33** del ESP32 → pin **IN4** del L298N.
-41. **Cable** → **GPIO14** del ESP32 → pin **ENB** del L298N.
+23. **Cable** → **GPIO13** del ESP32 → pin **IN1** del L298N.
+24. **Cable** → **GPIO25** del ESP32 → pin **IN2** del L298N.
+25. **Cable** → **GPIO27** del ESP32 → pin **ENA** del L298N.
+26. **Cable** → **GPIO32** del ESP32 → pin **IN3** del L298N.
+27. **Cable** → **GPIO33** del ESP32 → pin **IN4** del L298N.
+28. **Cable** → **GPIO18** del ESP32 → pin **ENB** del L298N. ⬅️ **cambió** (antes GPIO14)
 
 ### Alimentación del L298N (desde la fuente SLAVE, regulada a ~8V)
-42. **Cable** → **+ (rojo)** de la fuente SLAVE (8V) → al borne **+12V** del L298N.
-43. **Cable** → **− (negro)** de la fuente SLAVE (8V) → al borne **GND** del L298N.
-44. **Cable** → del borne **GND** del L298N → al **riel GND** de la protoboard. *(GND común: MUY importante)*
+29. **Cable** → **+ (rojo)** de la fuente SLAVE (8V) → al borne **+12V** del L298N.
+    *(el borne se llama "+12V" pero acepta de 7 a 12V: le ponemos 8V)*
+30. **Cable** → **− (negro)** de la fuente SLAVE (8V) → al borne **GND** del L298N.
+31. **Cable** → del borne **GND** del L298N → al **riel GND** de la protoboard. *(GND común: MUY importante)*
+
+> 🚫 **El borne +5V del L298N no se conecta a nada.** Es una salida. Si lo enchufás al 5V/VIN
+> del ESP32 mientras el ESP32 está con el USB, quedan dos fuentes de 5V peleándose y podés
+> quemar el regulador de la placa. El ESP32 se alimenta por USB y punto.
 
 ### Los 2 motores del cobertor
-45. **Cable** → borne **OUT1** del L298N → a un cable del **Motor A** (el del rodillo).
-46. **Cable** → borne **OUT2** del L298N → al otro cable del **Motor A**.
-47. **Cable** → borne **OUT3** del L298N → a un cable del **Motor B** (el que tira los cables).
-48. **Cable** → borne **OUT4** del L298N → al otro cable del **Motor B**.
+32. **Cable** → borne **OUT1** del L298N → a un cable del **Motor A** (el del rodillo).
+33. **Cable** → borne **OUT2** del L298N → al otro cable del **Motor A**.
+34. **Cable** → borne **OUT3** del L298N → a un cable del **Motor B** (el que tira los cables).
+35. **Cable** → borne **OUT4** del L298N → al otro cable del **Motor B**.
 
-> Si al probar un motor gira al revés, das vuelta sus 2 cables (ej. OUT1↔OUT2). Sin drama.
+> No importa cuál cable del motor va a cuál borne: eso sólo decide para qué lado gira, y se
+> corrige después dando vuelta los dos cables. Lo verificamos en la prueba de más abajo.
+>
+> 💡 Los motores tienen cables finos: apretá bien los tornillos y tirá suave de cada cable
+> para confirmar que quedó agarrado. Un cable que se suelta en movimiento deja el motor
+> trabado con la lona a medio camino.
 
 ---
 
-## PASO 7 — Cobertor: los 2 fines de carrera (sensores de tope)
+## PASO 8 — Cobertor: los 2 fines de carrera (sensores de tope)
 
-Cada fin de carrera es un interruptor con 2 patas. No importa el orden de las patas.
+Los fines de carrera suelen traer **3 patas** marcadas **COM**, **NO** y **NC**. Usamos
+**COM** y **NO** (la pata **NC** queda libre).
 
-49. **Cable** → una pata del **fin de carrera CERRADO** → al pin **GPIO23** del ESP32.
-50. **Cable** → la otra pata del **fin de carrera CERRADO** → al **riel GND**.
-51. **Cable** → una pata del **fin de carrera ABIERTO** → al pin **GPIO5** del ESP32.
-52. **Cable** → la otra pata del **fin de carrera ABIERTO** → al **riel GND**.
+- **COM** = común · **NO** = normal abierto (se cierra al apretar la palanca) · **NC** = normal
+  cerrado (se abre al apretar).
+- Si tu fin de carrera tiene sólo 2 patas, es un interruptor simple y no importa el orden.
+
+36. **Cable** → pata **COM** del **fin de carrera CERRADO** → al **riel GND**.
+37. **Cable** → pata **NO** del **fin de carrera CERRADO** → al pin **GPIO23** del ESP32.
+38. **Cable** → pata **COM** del **fin de carrera ABIERTO** → al **riel GND**.
+39. **Cable** → pata **NO** del **fin de carrera ABIERTO** → al pin **GPIO19** del ESP32. ⬅️ **cambió** (antes GPIO5)
 
 > No llevan resistencia: el ESP32 usa su resistencia interna (ya está en el código).
+>
+> ✅ **Cómo comprobar que quedaron bien**, sin mover ningún motor: mandá **`/status`** por
+> Telegram y mirá la línea "Cobertor". Apretá con el dedo el fin de carrera CERRADO y volvé a
+> mandar `/status`: tiene que pasar de *"parado (posición intermedia)"* a *"cerrado"*. Lo mismo
+> con el de ABIERTO. **Si no cambia, están en la pata equivocada** (probablemente NC en vez de NO).
 
 ---
 
-## PASO 7-BIS — Segundo sensor de sonido (detector de golpes por hardware)
+## PASO 9 — Alimentar el ESP32
 
-Es el módulo de sonido de repuesto (KY-037). ⚠️ Este va a **3.3V, NUNCA a 5V**
-(su salida DO llega al ESP32 y más de 3.3V lo dañaría).
+40. **Cable USB** → del ESP32 → a la notebook. *(así lo programás y ves el Monitor Serie)*
 
-52a. **Cable** → del pin **VCC/+** del módulo 2 → al **riel 3.3V**.
-52b. **Cable** → del pin **GND/G** del módulo 2 → al **riel GND**.
-52c. **Cable** → del pin **DO** del módulo 2 → al pin **GPIO35** del ESP32.
-     *(el pin AO del módulo 2 queda SIN conectar)*
+---
 
-> El potenciómetro de ESTE módulo sí importa: fija el umbral del detector.
-> Cómo calibrarlo está en `PROTOCOLO-TALLER.md`.
+# 🧪 PRUEBA DE LOS MOTORES (hacer esto ANTES de montar el mecanismo)
 
-## PASO 8 — Alimentar el ESP32
+El objetivo es verificar el cableado y **para qué lado gira cada motor** con los motores
+**sueltos, desacoplados de la lona y del rodillo**. Si el mecanismo ya está armado y algo está
+al revés, el cobertor tira para el lado equivocado y se traba.
 
-53. **Cable USB** → del ESP32 → a la notebook. *(así lo programás y ves el Monitor Serie)*
+### 1. Preparar la fuente (red de seguridad)
+1. **TRACKING** en **INDEP**.
+2. **SLAVE**: **8V**.
+3. **CURRENT** de la SLAVE: bajala hasta casi el mínimo y después subila hasta que marque
+   **~1A**. En vacío los dos motores juntos consumen menos de 0,3A, así que 1A es de sobra.
+   **Si la fuente entra en límite de corriente** (se prende la luz de "CC" y la tensión se cae),
+   **algo está trabado o en corto: cortá y revisá**. Esa es la protección que evita quemar el
+   L298N o un motor.
+
+### 2. Cargar el programa
+4. Abrí `PiletaInteligente.ino` y cargalo al ESP32 (los pines nuevos vienen en esta versión).
+5. Abrí el **Monitor Serie a 115200** para ir viendo lo que informa.
+
+### 3. Probar cada motor por separado
+Por Telegram:
+
+| Comando | Qué hace |
+|---|---|
+| `/motor_a` | Mueve **sólo el motor A** (el del rodillo) durante 2 segundos y frena solo |
+| `/motor_b` | Mueve **sólo el motor B** (el que tira de los cables) durante 2 segundos y frena solo |
+
+6. Mandá **`/motor_a`**. Tiene que girar **sólo** el motor A. Anotá para qué lado gira.
+7. Mandá **`/motor_b`**. Tiene que girar **sólo** el motor B. Anotá para qué lado gira.
+
+**Qué mirar:**
+- **No gira ninguno** → revisá los jumpers de ENA/ENB (¿los sacaste?), el GND común (paso 31)
+  y que la fuente SLAVE esté realmente dando 8V.
+- **Gira el que no era** → tenés cruzados los cables de señal: IN1/IN2/ENA son del motor A,
+  IN3/IN4/ENB son del motor B.
+- **Gira muy despacio o le cuesta arrancar** → es normal: el programa los mueve al 70% de
+  velocidad y el L298N se come ~2V. Si con la lona puesta no llega a arrancar, subí
+  `VELOCIDAD_COBERTOR` de 180 a 255 en el `.ino`.
+- **Gira para el lado equivocado** → invertí **los dos cables de ese motor** en el L298N
+  (OUT1↔OUT2 para el A, OUT3↔OUT4 para el B). No toques el código.
+
+**Cuál es el lado correcto:**
+- **Motor A** tiene que girar en el sentido que **enrolla la lona en el rodillo** (= abrir).
+- **Motor B** tiene que girar en el sentido que **tira de los cables** (= cerrar).
+
+### 4. Recién ahora, el movimiento completo
+8. Con los motores todavía desacoplados, probá **`/cobertor_abrir`**. Tiene que arrancar el
+   motor A y quedarse hasta que aprietes el fin de carrera ABIERTO con el dedo (o hasta que
+   corte solo a los 30 segundos por seguridad).
+9. Apretá el fin de carrera **ABIERTO**: el motor tiene que frenar en el acto y te tiene que
+   llegar el aviso *"Cobertor ABIERTO ✅"* por Telegram.
+10. Lo mismo con **`/cobertor_cerrar`** y el fin de carrera **CERRADO**.
+11. Probá **`/cobertor_parar`** en medio de un movimiento: tiene que frenar al instante.
+
+Si los 4 puntos anteriores dan bien, el sistema de motores está verificado y recién ahí
+conviene acoplar los motores al mecanismo.
 
 ---
 
@@ -187,10 +294,13 @@ Es el módulo de sonido de repuesto (KY-037). ⚠️ Este va a **3.3V, NUNCA a 5
 - [ ] ¿El sensor de sonido **1** está en **VIN (5V)** y el **2** en **3.3V**?
 - [ ] ¿Ningún cable en los pines **SD0, SD1, SD2, SD3, CMD, CLK** (GPIO6–11)? Son de la
       memoria flash: un solo cable ahí y **el ESP32 no arranca**.
-- [ ] ¿Cada LED tiene **su** resistencia de 220Ω?
-- [ ] ¿Sacaste los **jumpers ENA/ENB** del L298N?
+- [ ] ¿Sacaste los **jumpers ENA/ENB** del L298N y **dejaste** el jumper del regulador de 5V?
+- [ ] ¿El borne **+5V del L298N** quedó **sin conectar**?
+- [ ] ¿El **ENB** está en **GPIO18** y el **fin de carrera ABIERTO** en **GPIO19**? *(pines nuevos)*
+- [ ] ¿Los fines de carrera están en las patas **COM** y **NO**?
 - [ ] ¿La fuente **MASTER a 12V** y la **SLAVE a ~8V**, con TRACKING en **INDEP**?
-- [ ] ¿La perilla **CURRENT** de la fuente empieza baja (media vuelta)?
+- [ ] ¿La perilla **CURRENT** de la SLAVE limitada a **~1A** para la prueba de motores?
+- [ ] ¿Los motores están **desacoplados** del mecanismo para la primera prueba?
 
 Si todo esto está ✔️, enchufá el USB y abrí el Monitor Serie a **115200 baudios**.
 
@@ -203,6 +313,6 @@ Es una fuente doble (MASTER + SLAVE), cada lado con perilla de VOLTAGE y de CURR
 1. Interruptor **TRACKING** del medio → en **INDEP** (las dos salidas independientes).
 2. **MASTER**: girá **VOLTAGE** hasta que el display marque **12V**. Es para el calentador.
 3. **SLAVE**: girá **VOLTAGE** hasta **~8V**. Es para los motores.
-4. **CURRENT** (las dos): arrancá con la perilla como a la mitad. Si algo está mal, la
-   fuente corta sola en vez de quemar algo. Es tu red de seguridad.
+4. **CURRENT**: para la prueba de motores, limitá la SLAVE a **~1A** (ver arriba). Si algo
+   está mal, la fuente corta sola en vez de quemar algo. Es tu red de seguridad.
 5. Bornes: **🔴 rojo = +** , **⚫ negro = −** , 🟢 verde = tierra (NO se usa).
