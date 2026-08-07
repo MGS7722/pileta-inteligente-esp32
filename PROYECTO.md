@@ -17,13 +17,17 @@ desde un bot de Telegram. Todo corre en un solo ESP32 con el programa
 - LCD 16x02 muestra temperatura y estado del calentador en tiempo real
 
 ## Sistema 2 — Luces al ritmo de la música
-- Sensor de sonido detecta el ritmo de la música ambiente
-- Medición por **volumen pico a pico** en ventanas de ~35 ms, con una base de ruido
-  ambiente que el sistema aprende solo (sin FFT: con esta señal, clasificar frecuencias
-  no aportaba información confiable)
-- 8 LEDs de colores (4 colores × 2 lados: verde, rojo, azul, blanco) al ritmo del sonido:
-  sombra rotante mientras hay música y apagón tipo strobe en cada golpe
-- Arrancan APAGADAS; se activan desde Telegram (auto / ON / OFF)
+- Un micrófono KY-037 capta la música ambiente por su salida analógica
+- **Análisis de espectro real**: 256 muestras a 10 kHz → FFT → separación en
+  **graves (78–234 Hz)**, **medios (234–2000 Hz)** y **agudos (2–5 kHz)**, con control
+  automático de ganancia por banda para que las tres se vean parejas
+- **Detección de golpes** comparando la energía de los graves contra el promedio del
+  último segundo, con umbral que se ajusta solo según qué tan marcado sea el ritmo
+- **Tira WS2812 de 15 píxeles** (50 cm) con cuatro efectos: espectro, mezcla, cometa y
+  arcoíris; sin música pasa a una respiración lenta
+- **Limitador de corriente por software**: permite alimentar la tira del propio ESP32 sin
+  una fuente aparte
+- Arranca APAGADA; se activa desde Telegram (auto / ON / OFF)
 
 ## Sistema 3 — Cobertor automático retráctil
 - Cobertor motorizado que se abre y cierra: rodillo que enrolla la lona de un lado +
@@ -41,9 +45,10 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Luces: /luces_auto, /luces_on, /luces_off
 - Cobertor: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar
 - Prueba de taller: /motor_a, /motor_b (mueven un motor solo 2 segundos, sin fines de carrera)
-- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (motores, en %), /sonido_mixto |
-  /sonido_ao | /sonido_do — todos guardados en NVS
-- Consultas: /status, /temp, /audio, /diag, /trace, /ip
+- Efectos de luces: /efecto 1 (espectro) | 2 (mezcla) | 3 (cometa) | 4 (arcoíris)
+- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (motores, en %), /brillo 70,
+  /leds 15, /corriente 120, /orden — todos guardados en NVS
+- Consultas: /status, /temp, /audio, /espectro, /diag, /trace, /onda, /luces_test, /ip
 
 ---
 
@@ -55,13 +60,14 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 | Módulo relé 1 canal 5V/10A | 2 | Control calentador |
 | Cartucho calefactor 12V | 2 | Calentador de agua |
 | Display LCD 16x02 + I2C | 1 | Pantalla de estado |
-| Sensor de sonido | 2 | Detección ritmo musical |
+| **Tira WS2812B 5V, 30 LED/m** | rollo de 5 m | **Luces disco (se usan 50 cm = 15 píxeles)** |
+| Sensor de sonido KY-037 | 2 | Detección del ritmo (se usa **1**) |
 | Driver L298N doble puente H | 2 | Control motores cobertor |
 | Fin de carrera (limit switch) | 3 | Posición cobertor (se usan 2) |
 | Motor Pololu 6V 500 RPM metálico | 2 | Motores del cobertor |
 | Acople flexible 5mm | 2 | Unir motor al eje del cobertor |
-| LEDs 5mm (rojo, verde, azul, blanco) | Pack 100 | Luces disco (se usan 8) |
-| Resistencias 220Ω | Pack 50 | LEDs (8 en uso) |
+| LEDs 5mm (rojo, verde, azul, blanco) | Pack 100 | *sin uso: los reemplazó la tira* |
+| Resistencias 220Ω | Pack 50 | 2 en serie (440Ω) en la línea de datos de la tira |
 | Protoboard 830 puntos | 2 | Circuito |
 | Botones pulsadores | 2 | Control manual (sin usar todavía) |
 | Fuente de laboratorio doble regulable | 1 | 12V (calentador) + ~8V (motores) |
@@ -83,20 +89,20 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 | GPIO26 | Relé IN (calentador) |
 | GPIO21 | LCD SDA (I2C) |
 | GPIO22 | LCD SCL (I2C) |
-| GPIO16 | LEDs verdes (luces disco) |
-| GPIO17 | LEDs rojos (luces disco) |
-| GPIO14 | LEDs azules (luces disco) |
-| GPIO5  | LEDs blancos (luces disco) |
-| GPIO34 | Sensor de sonido 1 — salida AO (analógica, ADC1). Módulo alimentado a 5V/VIN |
-| GPIO35 | Sensor de sonido 2 — salida DO (golpes por hardware). Módulo a 3.3V |
+| GPIO16 | Tira WS2812 — entrada DIN (con 440Ω en serie) |
+| GPIO34 | Micrófono KY-037 — salida AO (analógica, ADC1). Módulo alimentado a 5V/VIN |
 | GPIO13 / GPIO25 / GPIO27 | L298N motor A: IN1 / IN2 / ENA (PWM) |
 | GPIO32 / GPIO33 / GPIO18 | L298N motor B: IN3 / IN4 / ENB (PWM) |
 | GPIO23 | Fin de carrera cerrado (COM a GND, NO al pin) |
 | GPIO19 | Fin de carrera abierto (COM a GND, NO al pin) |
 
+> **Pines libres**: GPIO17, GPIO14, GPIO5 y GPIO35 (eran de los 8 LEDs y del segundo micrófono).
+>
 > Los pines del cobertor evitan a propósito los que el ESP32 usa al arrancar (GPIO5 y GPIO14
-> emiten un pulso al encender; con un driver de motor del otro lado eso es un tirón). Esos dos
-> quedaron para LEDs. Detalle en la regla 4 de `PiletaInteligente/CONEXIONES.md`.
+> emiten un pulso al encender; con un driver de motor del otro lado eso es un tirón). Por lo
+> mismo, la tira de datos va en GPIO16 y no en esos dos: un pulso en la línea de datos deja
+> píxeles encendidos al azar hasta que el programa arranca. Detalle en la regla 4 de
+> `PiletaInteligente/CONEXIONES.md`.
 
 > El croquis de conexiones cable por cable está en `PiletaInteligente/CABLEADO-PASO-A-PASO.md`
 > y `PiletaInteligente/CONEXIONES.md`.

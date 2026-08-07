@@ -11,18 +11,21 @@ no te podés equivocar. Cada línea es UN cable.
 > **Antes de empezar:** ESP32 pinchado en el medio de la protoboard. Conviene usar las dos
 > filas de los costados de la protoboard como **riel de GND (−)** y **riel de 3.3V (+)**.
 
-> ### 🚨 Si venís a montar el COBERTOR (motores), leé esto primero
-> **Cambiaron 4 pines** respecto de la versión anterior de este documento. Los motores y los
-> fines de carrera se mudaron a pines que no hacen nada raro mientras el ESP32 arranca:
+> ### 🚨 Qué cambió en esta versión (2026-08-07)
 >
-> | Qué | Antes | **Ahora** | Por qué |
-> |---|---|---|---|
-> | L298N **ENB** (motor B) | GPIO14 | **GPIO18** | GPIO14 tira un pulso al arrancar: podía hacer que el motor B pegue un tirón en cada encendido |
-> | **Fin de carrera ABIERTO** | GPIO5 | **GPIO19** | GPIO5 es pin de arranque: la posición de la lona no debe influir en cómo arranca el chip |
-> | LEDs **azules** | GPIO18 | **GPIO14** | Un LED que parpadea al arrancar no molesta a nadie |
-> | LEDs **blancos** | GPIO19 | **GPIO5** | Ídem |
+> **Las luces son ahora una tira WS2812**, no 8 LEDs sueltos:
 >
-> **Hay que cargar el sketch nuevo** (`PiletaInteligente.ino`) para que estos pines valgan.
+> | Qué | Antes | **Ahora** |
+> |---|---|---|
+> | Luces | 8 LEDs en 4 pines (GPIO16/17/14/5) | **Tira WS2812 en GPIO16**, un solo cable de datos |
+> | Micrófonos | 2 (AO en GPIO34 + DO en GPIO35) | **1 solo** (AO en GPIO34). GPIO35 queda libre |
+> | Cómo reacciona | Al volumen | **Al espectro**: graves, medios y agudos por separado |
+>
+> Y de la revisión anterior, para el **cobertor**: `ENB` se mudó de GPIO14 a **GPIO18**, y el
+> **fin de carrera ABIERTO** de GPIO5 a **GPIO19** — porque esos dos pines tiran un pulso
+> mientras el ESP32 arranca, y del otro lado hay motores.
+>
+> **Hay que cargar el sketch nuevo** (`PiletaInteligente.ino`) para que todo esto valga.
 
 ---
 
@@ -33,13 +36,13 @@ no te podés equivocar. Cada línea es UN cable.
 | GPIO4 | DS18B20 (dato) + resistencia 4.7kΩ a 3.3V |
 | GPIO26 | Relé — IN |
 | GPIO21 / GPIO22 | LCD — SDA / SCL |
-| GPIO16 | LEDs verdes · GPIO17 LEDs rojos · **GPIO14** LEDs azules · **GPIO5** LEDs blancos |
-| GPIO34 | Sensor de sonido 1 — AO (módulo a 5V) |
-| GPIO35 | Sensor de sonido 2 — DO (módulo a 3.3V) |
+| **GPIO16** | **Tira WS2812 — DIN (con 440Ω en serie)** ⬅️ nuevo |
+| GPIO34 | Micrófono — AO (módulo a 5V) |
 | GPIO13 / GPIO25 / GPIO27 | L298N — IN1 / IN2 / ENA (motor A) |
 | GPIO32 / GPIO33 / **GPIO18** | L298N — IN3 / IN4 / ENB (motor B) |
 | GPIO23 | Fin de carrera CERRADO |
 | **GPIO19** | Fin de carrera ABIERTO |
+| GPIO17 · GPIO14 · GPIO5 · GPIO35 | *libres* (eran de los 8 LEDs y del 2do micrófono) |
 
 ---
 
@@ -49,7 +52,7 @@ Hay **tres alimentaciones independientes**. No se mezclan entre sí:
 
 | Alimenta | A quién | Cuánto |
 |---|---|---|
-| **USB de la notebook** | El **ESP32** — y a través suyo el LCD, el lado de control del relé y los sensores, que consumen poquito | 5V |
+| **USB de la notebook** | El **ESP32** — y a través suyo el LCD, el relé, el micrófono y **la tira de luces** | 5V |
 | **Fuente MASTER** | El **cartucho calefactor**, a través del relé | 12V |
 | **Fuente SLAVE** | El **L298N**, y de ahí los 2 motores del cobertor | ~8V |
 
@@ -60,13 +63,25 @@ aparte (fuente → relé → cartucho → fuente).
 ```
    Notebook ──USB──► ESP32 ──señales──► L298N ──► Motor A y Motor B
                        │                  ▲
-                       └──── GND común ───┘        ▲
-                                                   │
+                       ├──5V y datos──► TIRA WS2812
+                       │                  ▲
+                       └──── GND común ───┘
+                                                   ▲
                               Fuente SLAVE ~8V ────┘
 
    Fuente MASTER 12V ──► relé ──► cartucho calefactor ──► vuelve a la fuente
                                   (circuito cerrado sobre sí mismo, aparte de todo)
 ```
+
+⚠️ **El riel de 5V está cargado.** Ese único USB alimenta al ESP32 (150–250 mA), al LCD
+(~30 mA), al relé cuando está activo (~75 mA) y al micrófono (~5 mA): entre 260 y 460 mA
+**antes** de sumar la tira. Un USB 2.0 entrega 500 mA. Por eso la tira va con el limitador de
+corriente en `/corriente 120` mientras estés con la notebook. Con un cargador de celular de 2A
+podés subirlo a 500.
+
+💡 **Los cables de la tira, directo al pin `VIN`**, no al tramo de protoboard donde está el
+micrófono. La tira pega tirones de corriente en cada cambio de brillo, y si comparte camino con
+el micrófono esos tirones entran en la medición como ruido.
 
 ---
 
@@ -80,7 +95,7 @@ A partir de acá, "riel GND" = fila azul, y "riel 3.3V" = fila roja.
 > 💡 **Cómo funciona la protoboard (evita el 90% de las dudas):** cada fila de 5 agujeros está
 > conectada por dentro, así que **los 5 agujeros de una fila son el mismo punto eléctrico**.
 > Cuando un pin del ESP32 tiene que ir a varios lados —por ejemplo el **VIN (5V)**, que alimenta
-> el LCD, el relé y el sensor de sonido 1— no hay que amontonar tres cables en el mismo
+> el LCD, el relé, el micrófono y la tira— no hay que amontonar cuatro cables en el mismo
 > agujero: se usan los otros agujeros **de la misma fila**. Los dos rieles largos de los
 > costados funcionan igual, pero a lo largo de toda la placa.
 
@@ -136,59 +151,88 @@ El módulo relé tiene 3 pines de control: **VCC, GND, IN**.
 
 ---
 
-## PASO 4 — Sensor de sonido 1 (volumen, canal analógico)
+## PASO 4 — El micrófono (KY-037)
 
-El módulo tiene 4 pines: **VCC (o +), GND (o G), DO y AO**. De **este** módulo usamos el **AO**;
-su DO queda sin conectar.
+El módulo tiene 4 pines: **VCC (o +), GND (o G), DO y AO**. Usamos el **AO**; el **DO queda
+sin conectar** y el potenciómetro del módulo **no hace falta tocarlo** (sólo afecta al DO).
 
 17. **Cable** → del pin **VCC/+** del sensor → al pin **VIN (5V)** del ESP32.
-    *(este módulo pide 4-6V según su especificación; su salida AO es de nivel bajo
+    *(el módulo pide 4-6V según su especificación; su salida AO es de nivel bajo
     y no daña al GPIO34 — verificado con /diag: el Máximo debe quedar < 3000)*
 18. **Cable** → del pin **GND/G** del sensor → al **riel GND**.
 19. **Cable** → del pin **AO** del sensor → al pin **GPIO34** del ESP32.
 
----
-
-## PASO 5 — Sensor de sonido 2 (detector de golpes por hardware)
-
-Es el módulo de sonido de repuesto (KY-037). ⚠️ Este va a **3.3V, NUNCA a 5V**
-(su salida DO llega al ESP32 y más de 3.3V lo dañaría).
-
-20. **Cable** → del pin **VCC/+** del módulo 2 → al **riel 3.3V**.
-21. **Cable** → del pin **GND/G** del módulo 2 → al **riel GND**.
-22. **Cable** → del pin **DO** del módulo 2 → al pin **GPIO35** del ESP32.
-    *(el pin AO del módulo 2 queda SIN conectar)*
-
-> El potenciómetro de ESTE módulo sí importa: fija el umbral del detector.
-> Cómo calibrarlo está en `PROTOCOLO-TALLER.md`.
+> **Es un solo micrófono.** El segundo módulo (el que iba por DO al GPIO35) ya no se usa:
+> el sistema analiza el espectro del micrófono analógico y de ahí saca tanto las bandas de
+> frecuencia como los golpes del ritmo. GPIO35 queda libre.
 
 ---
 
-## PASO 6 — Las 8 luces LED ⏸️ *(en pausa: se reemplazan por la tira WS2812)*
+## PASO 5 — La tira de luces WS2812 🆕
 
-> Los 8 LEDs están **desconectados** a propósito: los reemplaza una tira WS2812 que todavía
-> no llegó. Este paso queda acá por si hay que volver a armarlos mientras tanto — **ojo que
-> el azul y el blanco cambiaron de pin**.
->
-> Cuando llegue la tira: **alimentación propia de 5V**, nunca desde el ESP32; sólo se comparte
-> el **GND**.
+Son **3 cables**. Este paso reemplaza por completo a los 8 LEDs viejos.
 
-Son 8 LEDs: por cada color hay 2 (uno para cada lado de la pileta). Cada LED lleva
-**su propia resistencia de 220Ω** en la pata larga (+).
+### 5.1 Preparar la tira
 
-**Regla para CADA LED:** la pata larga va a una resistencia 220Ω, y de la resistencia
-sale un cable al pin del ESP32 que le toca por color. La pata corta va al riel GND.
+**Cortar 50 cm** (= 15 píxeles en una tira de 30 LED/m). Se corta **por las líneas de cobre**
+que hay entre píxel y píxel, cada 33 mm.
 
-| Color | Pin | LEDs |
-|---|---|---|
-| Verdes | **GPIO16** | lado A y lado B, cada uno con su 220Ω |
-| Rojos | **GPIO17** | ídem |
-| Azules | **GPIO14** ⬅️ cambió | ídem |
-| Blancos | **GPIO5** ⬅️ cambió | ídem |
+> 💡 **Cortá del extremo que ya trae el conector con cables**, así no tenés que soldar nada.
+
+**Fijate por dónde entran los datos.** La tira tiene dirección: un extremo dice **`DIN`** (o
+`DI`) y el otro **`DO`**. Las **flechas** impresas apuntan hacia donde va la señal. El cable de
+datos va del lado de **`DIN`**.
+> Si la conectás al revés no enciende nada, pero **no se rompe**: se da vuelta y listo.
+
+### 5.2 Los 3 cables
+
+20. **Cable** → del cable **`5V` (rojo)** de la tira → al pin **VIN (5V)** del ESP32.
+21. **Cable** → del cable **`GND` (blanco o negro)** de la tira → al **riel GND**.
+22. **Dos resistencias de 220Ω en serie** (una después de la otra = 440Ω) entre el pin
+    **GPIO16** del ESP32 y el cable **`DIN` (verde)** de la tira.
+
+```
+   GPIO16 ──[220Ω]──[220Ω]──► DIN (verde)   de la tira
+   VIN 5V ─────────────────► 5V  (rojo)
+   riel GND ───────────────► GND (blanco/negro)
+```
+
+⚠️ **Tres cosas de este paso:**
+
+- **La resistencia no es opcional.** Adafruit especifica 300–500Ω entre el pin del micro y el
+  DIN del primer píxel: protege esa entrada de los picos de conmutación. Dos de 220Ω en serie
+  dan 440Ω, justo en el rango.
+- **El cable de datos, CORTO** (20–30 cm). Es la causa número uno de fallas: cuanto más largo,
+  peor le llega la señal de 3,3V a una tira de 5V.
+- **Cableá con el USB desenchufado.** Adafruit especifica conectar primero GND, después +5V y
+  último los datos; con todo saliendo del mismo USB, alcanza con no tener corriente encima.
+
+### 5.3 Por qué la tira puede colgarse del ESP32 (y no necesita otra fuente)
+
+Son dos problemas distintos y los dos están resueltos:
+
+**El de la señal.** La tira necesita 0,7 × su alimentación para leer un "1", y el ESP32 sólo da
+3,3V. Pero ese umbral **baja con la alimentación**: el pin `VIN` no entrega 5,0V sino ~4,7V,
+porque la placa tiene un diodo en el medio. A 4,7V el umbral queda en **3,29V** y el ESP32 llega.
+
+> 🔎 **Medí el `VIN` con el multímetro** (contra GND, con el USB puesto). Si da 4,6–4,8V, todo
+> en orden. Si da 5,0V clavados, tu placa no tiene ese diodo: anda igual pero justo, y si ves
+> parpadeo mirá el plan B del final.
+
+**El del consumo.** 15 píxeles en blanco pleno serían 900 mA, imposible. Por eso **el programa
+lleva un limitador**: antes de mandar cada cuadro calcula lo que va a consumir y, si se pasa del
+presupuesto, baja el brillo hasta que entre. La tira **no puede** pasarse.
+
+| Cómo tengas el ESP32 | Comando |
+|---|---|
+| Enchufado al USB de la notebook | `/corriente 120` |
+| En un cargador de celular de 2A | `/corriente 500` |
+
+**Las fuentes del proyecto no cambian**: MASTER 12V al calefactor, SLAVE 8V a los motores.
 
 ---
 
-## PASO 7 — Cobertor: el driver L298N
+## PASO 6 — Cobertor: el driver L298N
 
 **La placa de arriba abajo** (la roja con el disipador de aluminio en el medio):
 
@@ -296,7 +340,7 @@ Este último cable es el **GND común** y es imprescindible: sin él los motores
 
 ---
 
-## PASO 8 — Cobertor: los 2 fines de carrera (sensores de tope)
+## PASO 7 — Cobertor: los 2 fines de carrera (sensores de tope)
 
 Los fines de carrera suelen traer **3 patas** marcadas **COM**, **NO** y **NC**. Usamos
 **COM** y **NO** (la pata **NC** queda libre).
@@ -319,9 +363,98 @@ Los fines de carrera suelen traer **3 patas** marcadas **COM**, **NO** y **NC**.
 
 ---
 
-## PASO 9 — Alimentar el ESP32
+## PASO 8 — Alimentar el ESP32
 
 40. **Cable USB** → del ESP32 → a la notebook. *(así lo programás y ves el Monitor Serie)*
+
+---
+
+# 💡 PRUEBA DE LAS LUCES (hacer esto PRIMERO, antes que los motores)
+
+Es lo más nuevo del sistema, así que se prueba primero y solo: si algo falla, que falle sin
+motores ni calefactor encima confundiendo el diagnóstico.
+
+### 1. Antes de enchufar
+
+1. Repasá que la tira tenga sus **3 cables** (paso 5.2) y que el de datos entre por **`DIN`**.
+2. Repasá que estén las **dos resistencias de 220Ω en serie** entre GPIO16 y el `DIN`.
+3. **Ahora sí**, enchufá el USB.
+
+### 2. Medir el VIN (30 segundos, evita el 90% de los dolores de cabeza)
+
+4. Con el multímetro en tensión continua: punta roja en **`VIN`**, punta negra en **`GND`**.
+
+| Lectura | Qué significa |
+|---|---|
+| **4,6 – 4,8 V** | ✅ Perfecto. La señal de 3,3V del ESP32 alcanza con margen |
+| **5,0 V clavados** | ⚠️ Tu placa no tiene el diodo. Anda igual pero justo: si después ves parpadeo, andá al plan B |
+| **Menos de 4,5 V** | ❌ El USB no está dando bien. Probá otro cable u otro puerto |
+
+### 3. Cargar el programa
+
+5. Abrí `PiletaInteligente.ino` y cargalo (**necesita 6 librerías**, ver el README — se sumó
+   *Adafruit NeoPixel*).
+6. Abrí el **Monitor Serie a 115200**. Lo primero que imprime es **por qué arrancó**:
+   - `Motivo del ultimo arranque: encendido normal.` → todo bien.
+   - `*** CAIDA DE TENSION (brownout) ***` → la alimentación no alcanzó. Bajá `/corriente`.
+
+### 4. Probar la tira color por color
+
+7. Por Telegram, mandá **`/corriente 120`** (si estás con la notebook).
+8. Mandá **`/luces_test`**. La tira muestra, 1,2 segundos cada uno:
+   **ROJO → VERDE → AZUL → BLANCO**.
+
+Mirá **dos cosas**:
+
+| Qué ves | Qué significa | Qué hacer |
+|---|---|---|
+| Los 4 colores, en ese orden, en todos los píxeles | ✅ Todo bien | Seguí al punto 9 |
+| Los colores no coinciden (dice ROJO y ves VERDE) | Tu tira usa otro orden de bytes | `/orden` y repetí `/luces_test` |
+| Se encienden menos píxeles de los que cortaste | El programa cree que hay otra cantidad | `/leds 15` (o los que tengas) y repetí |
+| **No enciende nada** | Casi seguro el cable de datos está en `DO` en vez de `DIN` | Dá vuelta la tira |
+| Sólo el primer píxel, o colores al azar | La señal de datos llega mal | Acortá el cable de datos; revisá los 440Ω y el GND |
+| El ESP32 se reinicia | Consumo excesivo | `/corriente 80` y probá de nuevo |
+
+9. Mandá **`/leds 15`** (o la cantidad real que hayas cortado) y repetí `/luces_test` para
+   confirmar que responden todos.
+
+### 5. Verificar que la tira no ensucie el micrófono
+
+Este es el chequeo que más me importa: la tira y el micrófono comparten el riel de 5V.
+
+10. Con **silencio** en el taller y las luces apagadas (`/luces_off`), mandá **`/diag`**.
+    Anotá el número de **PICO A PICO** (debería estar entre 9 y 36).
+11. Mandá **`/luces_on`** y, con el mismo silencio, mandá **`/diag`** otra vez.
+
+| Resultado | Qué significa |
+|---|---|
+| El pico a pico casi no cambió | ✅ Perfecto |
+| Subió a más de 60 | ⚠️ La tira está contaminando la medición: pasá sus cables directo al pin `VIN`, separados del micrófono |
+
+### 6. La fiesta
+
+12. **`/luces_auto`** y poné música.
+13. Probá los cuatro efectos y quedate con el que más te guste:
+
+| Comando | Qué hace |
+|---|---|
+| `/efecto 1` | **ESPECTRO** — la tira en 3 zonas: graves (rojo), medios (verde), agudos (azul). Cada zona sube y baja con su banda |
+| `/efecto 2` | **MEZCLA** — toda la tira de un color mezclado con las 3 bandas: mucho bajo = rojo, platos = celeste |
+| `/efecto 3` | **COMETA** — recorre la tira dejando estela y rebota en cada golpe |
+| `/efecto 4` | **ARCOÍRIS** — degradado que gira más rápido cuanto más fuerte suena |
+
+14. Si te parece que reacciona poco o de más, mandá **`/espectro`** con la música sonando: te
+    dice el nivel de cada banda, contra qué se está comparando y a partir de qué valor dispara
+    los golpes. **`/audio`** te muestra lo mismo en barritas, más rápido de leer.
+15. **`/brillo 90`** si querés más luz (fijate que `/status` te dice cuánta corriente está
+    usando de la que tiene permitida).
+
+### 7. Para afinar después (opcional, con la música sonando)
+
+16. **`/trace`** vuelca por el Monitor Serie todo el análisis, 10 veces por segundo. Dejalo
+    correr un minuto con música y guardá la salida: con esos datos se termina de calibrar.
+17. **`/onda`** vuelca 256 muestras crudas del micrófono. Sirve para verificar la calidad de la
+    señal y si hay zumbido de la red eléctrica metiéndose.
 
 ---
 
@@ -397,7 +530,13 @@ conviene acoplar los motores al mecanismo.
       ESP32** y la otra en el **tornillo GND del L298N** → **tiene que pitar**. Si no pita,
       falta ese cable o está flojo.
 - [ ] ¿La resistencia de **4.7kΩ** está entre GPIO4 y 3.3V?
-- [ ] ¿El sensor de sonido **1** está en **VIN (5V)** y el **2** en **3.3V**?
+- [ ] ¿El **micrófono** está alimentado desde **VIN (5V)** y su **AO** en **GPIO34**?
+- [ ] **Tira:** ¿el cable de datos entra por **`DIN`** (el lado de las flechas) y no por `DO`?
+- [ ] **Tira:** ¿están las **dos resistencias de 220Ω en serie** entre GPIO16 y el `DIN`?
+- [ ] **Tira:** ¿el cable de datos es **corto** (20–30 cm)?
+- [ ] **Tira:** ¿sus cables de 5V y GND salen **directo del ESP32**, sin compartir camino con
+      el micrófono?
+- [ ] ¿Mediste el **`VIN`** con el multímetro? (esperado 4,6–4,8 V)
 - [ ] ¿Ningún cable en los pines **SD0, SD1, SD2, SD3, CMD, CLK** (GPIO6–11)? Son de la
       memoria flash: un solo cable ahí y **el ESP32 no arranca**.
 - [ ] ¿Sacaste los **jumpers ENA/ENB** del L298N y **dejaste** el jumper del regulador de 5V?

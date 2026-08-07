@@ -14,9 +14,10 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | Sensor temperatura DS18B20 | 2 | **S1** | Se usa 1 |
 | Módulo relé 1 canal 5V 10A | 2 | **S1** | Se usa 1 (prende el calentador) |
 | Cartucho calefactor 12V | 2 | **S1** | Se usa 1 |
-| Módulo sensor de sonido KY-037 | 2 | **S2** | Se usan LOS DOS: uno por AO (volumen, a 5V) y otro por DO (golpes, a 3.3V) |
-| LEDs 5mm (pack x100) | 1 | **S2** | Se usan 8: 4 colores × 2 lados (verde, rojo, azul, blanco) |
-| Resistencias 220Ω (pack x50) | 1 | **S2** | 8, una por cada LED de las luces |
+| Módulo sensor de sonido KY-037 | 2 | **S2** | Se usa **1**, por su salida AO, alimentado a 5V. Su DO no se usa |
+| **Tira WS2812B 5V, 30 LED/m** | rollo 5 m | **S2** | ⬅️ NUEVO. Se usan **50 cm = 15 píxeles**. Reemplaza a los 8 LEDs |
+| LEDs 5mm (pack x100) | 1 | — | *Sin uso: los reemplazó la tira* |
+| Resistencias 220Ω (pack x50) | 1 | **S2** | **2 en serie (440Ω)** en la línea de datos de la tira |
 | Driver doble puente H L298N | 2 | **S3** | Se usa 1 (mueve los 2 motores del cobertor) |
 | Fin de carrera (limit switch) | 3 | **S3** | Se usan 2 (tope abierto / tope cerrado) |
 | Motor reductor Pololu 6V 500 RPM metálico | 2 | **S3** | ⬅️ NUEVO. Un motor a cada lado |
@@ -43,12 +44,8 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | GPIO26 | S1 | Relé del calentador |
 | GPIO21 | GEN | LCD SDA (I2C) |
 | GPIO22 | GEN | LCD SCL (I2C) |
-| GPIO16 | S2 | LEDs verdes |
-| GPIO17 | S2 | LEDs rojos |
-| GPIO14 | S2 | LEDs azules (pin que pulsa al arrancar: inofensivo para un LED) |
-| GPIO5  | S2 | LEDs blancos (ídem) |
-| GPIO34 | S2 | Sensor de sonido 1 (AO) |
-| GPIO35 | S2 | Sensor de sonido 2 (DO) |
+| GPIO16 | S2 | Tira WS2812 — datos (DIN), con 440Ω en serie |
+| GPIO34 | S2 | Micrófono KY-037 (AO), módulo a 5V |
 
 ### Usados por el cobertor (Sistema 3)
 
@@ -67,9 +64,10 @@ en **`CONEXIONES.md`**:
 | GPIO19 | Fin de carrera "abierto" (pull-up interno) |
 
 > Los pines del cobertor son todos "tranquilos" a propósito: no hacen nada mientras el ESP32
-> arranca. Los que sí pulsan al encender (GPIO5 y GPIO14) quedaron para los LEDs, donde un
-> destello no tiene consecuencias. **Antes de mover cualquier pin, leer la regla 4 de
-> `CONEXIONES.md`.**
+> arranca. Por lo mismo, la línea de datos de la tira va en GPIO16: los pines que pulsan al
+> encender (GPIO5 y GPIO14) dejarían píxeles prendidos al azar hasta que arranca el programa.
+> **Antes de mover cualquier pin, leer la regla 4 de `CONEXIONES.md`.**
 
-Quedan libres: GPIO36, GPIO39 (sólo entrada, sin pull-up interno: necesitan resistencia
-externa si se usan para un pulsador) y los de la memoria flash GPIO6–11, que **no se tocan**.
+Quedan libres: **GPIO17, GPIO14, GPIO5 y GPIO35** (eran de los 8 LEDs y del segundo
+micrófono), más GPIO36 y GPIO39 (sólo entrada, sin pull-up interno: necesitan resistencia
+externa si se usan para un pulsador). Los de la memoria flash GPIO6–11 **no se tocan**.

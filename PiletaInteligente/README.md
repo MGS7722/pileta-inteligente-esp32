@@ -4,7 +4,7 @@ Un solo programa para el ESP32 que controla los tres sistemas de la pileta y se 
 desde un bot de Telegram:
 
 1. **Calentador** — sensor de temperatura DS18B20 + relé. Arranca **apagado**; se activa desde Telegram (automático o forzado ON).
-2. **Luces disco** — sensor de sonido + 8 LEDs (4 colores × 2 lados). En modo automático: sin música quedan **prendidas**, con música una **"sombra" recorre los colores** y cada golpe del ritmo las **apaga un instante** (strobe). Arrancan apagadas; se activan desde Telegram.
+2. **Luces disco** — micrófono + **tira WS2812** de 15 píxeles. El sonido se analiza por FFT y se separa en **graves, medios y agudos**; con esas tres bandas se pintan cuatro efectos distintos, con un destello en cada golpe del ritmo. Arranca apagada; se activa desde Telegram.
 3. **Cobertor** — 2 motores por L298N + fines de carrera. Abre/cierra desde Telegram y frena solo al llegar al tope.
 4. **Pantalla LCD** — muestra la temperatura y el estado en vivo.
 
@@ -23,7 +23,7 @@ Primero, en **Gestor de Tarjetas** instalá el core de la placa:
 > ⚠️ El core **3.x** es obligatorio: el programa usa `analogWrite()` para la
 > velocidad de los motores del cobertor, que en el core 2.x no existe.
 
-Después, en **Gestor de Librerías**, instalá estas 5 con **estas versiones** (son las
+Después, en **Gestor de Librerías**, instalá estas 7 con **estas versiones** (son las
 que ya están probadas y funcionando):
 
 | Librería | Versión exacta | Autor |
@@ -33,6 +33,8 @@ que ya están probadas y funcionando):
 | LiquidCrystal I2C | **1.1.2** | Frank de Brabander |
 | UniversalTelegramBot | **1.3.0** | Brian Lough |
 | **ArduinoJson** | **6.21.5** | Benoît Blanchon |
+| **Adafruit NeoPixel** | **1.15.5** | Adafruit |
+| **arduinoFFT** | **2.0.4** | Enrique Condes |
 
 > ⚠️ **LO MÁS IMPORTANTE:** ArduinoJson tiene que ser la **6.21.5**, NO la versión 7.
 > Con la 7 el proyecto **no compila** (UniversalTelegramBot todavía no la soporta).
@@ -77,24 +79,38 @@ títulos (`// ==========`). Cada bloque tiene una única responsabilidad:
 | **Encabezado** | Comentario inicial: qué hace el programa y el mapa de conexiones |
 | **PINES** | Qué pin del ESP32 va a cada componente |
 | **AJUSTES DEL CALENTADOR** | Temperatura objetivo, histéresis y cómo funciona el relé |
-| **AJUSTES DE LUCES / SONIDO** | Parámetros de la medición de sonido y la detección de ritmo |
+| **AJUSTES DE LA TIRA** | Píxeles, brillo, presupuesto de corriente y efectos |
+| **AJUSTES DEL ANÁLISIS DE SONIDO** | Tamaño de la FFT, cortes de las bandas, ganancia automática y detección de golpes |
 | **TIEMPOS** | Cada cuánto se lee la temperatura, se revisa Telegram y el timeout de WiFi |
-| **OBJETOS PRINCIPALES** | Sensores, pantalla, WiFi y el bot |
+| **OBJETOS PRINCIPALES** | Sensores, pantalla, tira, FFT, WiFi y el bot |
 | **ESTADO DEL SISTEMA** | Variables y los "modos" (calentador y luces: AUTO / ON / OFF) |
 | **setup()** | Se ejecuta **una vez** al encender: configura todo y conecta el WiFi |
 | **loop()** | Se repite **siempre** (ver abajo) |
 | **CALENTADOR** | Funciones para leer la temperatura y prender/apagar el relé |
-| **SONIDO + LUCES** | Medición del sonido, detección de golpes y patrones de las luces |
+| **SONIDO** | Captura, FFT y análisis de las tres bandas |
+| **LUCES** | Los efectos, y el volcado a la tira con el límite de corriente |
+| **COBERTOR** | Motores, fines de carrera y la máquina de estados del movimiento |
 | **TELEGRAM** | Conexión, lectura de comandos y ejecución |
 | **MENSAJES** | Arma los textos que el bot responde (/status, /temp, /audio, ayuda) |
 
-### La idea clave: el `loop()` hace 3 cosas "a la vez"
+### La idea clave: dos núcleos y quién es dueño de qué
 
-En cada vuelta, el `loop()` atiende los tres sistemas, cada uno con su propio ritmo:
+El ESP32 tiene **dos núcleos** y el programa los usa a los dos:
 
-1. **Sonido y luces** → en cada vuelta (muestrea el micrófono y actualiza los LEDs).
-2. **Temperatura y calentador** → cada 2 segundos.
-3. **Telegram** → cada 2,5 segundos (revisa si llegó algún comando).
+- **Núcleo 1** — el `loop()`. Es el **único dueño del micrófono y de la tira**. Una vuelta
+  completa tarda ~28 ms (casi todo es capturar el sonido), o sea unos 35 cuadros por segundo.
+- **Núcleo 0** — la tarea de Telegram, en el mismo núcleo donde el ESP32 maneja el WiFi.
+  Consultar Telegram puede bloquear varios segundos, y ahí no molesta a nadie.
+
+> ⚠️ **Regla que no se rompe:** los comandos de Telegram **nunca** tocan la tira ni el
+> micrófono. Sólo cambian una variable, y el loop actúa en la vuelta siguiente. Dos núcleos
+> usando el mismo periférico a la vez dan lecturas corrompidas y parpadeos.
+
+En cada vuelta, el `loop()` atiende cada sistema con su propio ritmo:
+
+1. **Sonido y luces** → en cada vuelta.
+2. **Cobertor** → en cada vuelta (para frenar apenas toca el fin de carrera).
+3. **Temperatura y calentador** → cada 2 segundos.
 
 ### Cómo mandan los comandos de Telegram
 
@@ -109,38 +125,60 @@ hace es cambiar el modo. Después, el resto del código (el bloque del calentado
 las luces) **actúa según el modo** en el que estén. Por eso es fácil de seguir: los
 comandos configuran, y los bloques ejecutan.
 
-### Ajustar la sensibilidad de las luces
+### Cómo funcionan las luces (el análisis del sonido)
 
-Las luces trabajan **solo prendidas o apagadas** (nunca a media luz). La detección de
-ritmo es **adaptativa**: el sistema aprende solo el nivel de ruido ambiente (la "base")
-y apaga las luces un instante en cada golpe que sobresale de esa base. No hay que
-calibrar según el volumen: se acomoda solo.
+El micrófono KY-037 entrega por su pin `AO` la **onda de sonido completa**, sin procesar
+(el LM393 de la placa es un comparador, no un amplificador: sólo maneja la salida `DO`,
+que no usamos). Eso permite analizar el espectro igual que lo hace un equipo de audio.
 
-Perillas disponibles en el código, por si hiciera falta afinar:
+La cadena, que corre entera en el núcleo 1 unas 35 veces por segundo:
 
-| Constante | Valor | Qué hace |
-|---|---|---|
-| `FACTOR_GOLPE` | 1.30 | Cuánto debe sobresalir el golpe sobre el ambiente (bajar = más sensible) |
-| `GOLPE_MINIMO` | 50 | Piso absoluto para disparar (evita falsos golpes en silencio) |
-| `SONIDO_MINIMO` | 45 | Piso de "hay música" (elige entre sombra rotante y luces fijas) |
-| `DURACION_APAGON_MS` | 110 | Cuántos milisegundos quedan apagadas en cada golpe |
+| Paso | Qué hace |
+|---|---|
+| **1. Captura** | 256 muestras a 10 kHz (25,6 ms). Mide además la frecuencia real, porque `analogRead()` no siempre tarda lo mismo |
+| **2. Preparado** | Quita el punto de reposo del micrófono y aplica una ventana de Hann |
+| **3. FFT** | 256 puntos → 128 frecuencias de 39 Hz cada una |
+| **4. Bandas** | Agrupa en **graves** (78–234 Hz), **medios** (234–2000 Hz) y **agudos** (2–5 kHz) |
+| **5. Ganancia automática** | Cada banda se normaliza contra **su propio** máximo reciente. Sin esto los agudos, que son mucho más débiles, quedarían siempre apagados |
+| **6. Suavizado** | Ataque instantáneo, caída suave: el golpe se ve al toque y se apaga con elegancia |
+| **7. Golpes** | Compara la energía de los graves contra el promedio del último segundo. El umbral se ajusta solo según qué tan marcados estén los golpes |
 
-> Estos valores están calibrados para el micrófono alimentado a **5V**, con mediciones
-> reales del 2026-08-06: silencio ≈ 33 de pico a pico, música ≈ 82, golpes de 250 a 1040.
-> Los valores anteriores venían de la señal más débil de 3.3V y habían quedado por debajo
-> del ruido de fondo.
+> **¿Por qué 10 kHz y 256 muestras?** 10 kHz permite analizar hasta 5 kHz, donde vive todo
+> el contenido rítmico de la música — es la misma frecuencia que usa WLED, el proyecto de
+> referencia en tiras reactivas al sonido. Con 512 muestras la resolución sería el doble,
+> pero el refresco caería a 19 cuadros por segundo y se vería a los tirones.
 
-> 💡 Para ver los números en vivo: mandá `/audio` con música sonando. Muestra el
-> volumen actual, la base aprendida y a partir de qué valor se dispara el golpe.
-> Para calibrar con datos en serio, `/trace` vuelca el pulso del sonido por el Monitor
-> Serie (115200) unas 10 veces por segundo, más una línea extra en cada golpe.
+**No hay nada que calibrar a mano**: la ganancia automática se acomoda sola al volumen, y
+el umbral de los golpes se calcula a partir de la dispersión de la propia música.
 
-**Detección bicanal:** además del micrófono analógico (AO), un **segundo módulo** de
-sonido conectado por su salida **DO** al GPIO35 actúa como detector de golpes por
-hardware: su potenciómetro fija el umbral y el LED de la placa muestra en vivo cuándo
-dispara. Con `/sonido_mixto` (default), `/sonido_ao` y `/sonido_do` se elige qué
-canal comanda los golpes (queda guardado). La guía de calibración está en
-**`PROTOCOLO-TALLER.md`**.
+> 💡 Para ver los números en vivo: **`/audio`** muestra las tres bandas en barritas, y
+> **`/espectro`** el detalle completo (valores crudos, contra qué se comparan, umbral de
+> golpe y frecuencia dominante). Para calibrar con datos en serio, **`/trace`** vuelca todo
+> por el Monitor Serie 10 veces por segundo, y **`/onda`** la señal cruda del micrófono.
+
+### Los cuatro efectos
+
+| Comando | Efecto |
+|---|---|
+| `/efecto 1` | **ESPECTRO** — la tira en 3 zonas: graves (rojo), medios (verde), agudos (azul) |
+| `/efecto 2` | **MEZCLA** — toda la tira de un color mezclado con las 3 bandas |
+| `/efecto 3` | **COMETA** — recorre la tira dejando estela y rebota en cada golpe |
+| `/efecto 4` | **ARCOÍRIS** — degradado que gira más rápido cuanto más fuerte suena |
+
+Sin música, cualquiera de los cuatro pasa a una **respiración lenta** con el color derivando.
+
+### El limitador de corriente
+
+15 píxeles en blanco pleno consumirían 900 mA, mucho más de lo que puede dar el USB. Por eso,
+antes de mandar cada cuadro, el programa **calcula lo que va a consumir y baja el brillo si se
+pasa** del presupuesto. Es lo que permite alimentar la tira del propio ESP32 sin otra fuente.
+
+| Cómo esté alimentado el ESP32 | Comando |
+|---|---|
+| USB de la notebook | `/corriente 120` |
+| Cargador de celular de 2A | `/corriente 500` |
+
+`/status` muestra cuánta corriente está usando de la que tiene permitida.
 
 ---
 
@@ -149,9 +187,12 @@ canal comanda los golpes (queda guardado). La guía de calibración está en
 Escribile `/start` al bot para ver el menú. Comandos:
 
 **Luces** (arrancan apagadas)
-- `/luces_auto` — sombra rotante con la música y strobe en cada golpe (sin música, prendidas fijas)
-- `/luces_on` — todas prendidas fijas
-- `/luces_off` — todas apagadas
+- `/luces_auto` — bailan con la música según el efecto elegido
+- `/luces_on` — tira encendida fija (blanco cálido)
+- `/luces_off` — tira apagada
+- `/efecto 1` a `/efecto 4` — qué efecto usar en AUTO (queda guardado)
+- `/brillo 70` — brillo máximo, en % (queda guardado)
+- `/luces_test` — prueba la tira color por color (rojo, verde, azul, blanco)
 
 **Calentador** (arranca apagado)
 - `/calentador_auto` — que se regule solo por la temperatura
@@ -172,10 +213,17 @@ Escribile `/start` al bot para ver el menú. Comandos:
 **Información**
 - `/status` — estado general
 - `/temp` — temperatura y calentador
-- `/audio` — datos del sonido
-- `/sonido_mixto` / `/sonido_ao` / `/sonido_do` — elegir la fuente de golpes
-- `/trace` — prende/apaga la traza del sonido por el Monitor Serie (para calibrar)
+- `/audio` — volumen y las tres bandas, en barritas
+- `/espectro` — detalle del análisis de frecuencias (para calibrar)
 - `/ip` — IP del ESP32
+
+**Ajustes finos (taller)**
+- `/leds 15` — cuántos píxeles tiene la tira conectada (queda guardado)
+- `/corriente 120` — presupuesto de corriente en mA (queda guardado)
+- `/orden` — invierte el orden de colores GRB ↔ RGB, si los colores salen cambiados
+- `/diag` — valores crudos del micrófono
+- `/trace` — prende/apaga la traza del sonido por el Monitor Serie
+- `/onda` — vuelca 256 muestras crudas del micrófono por el Monitor Serie
 
 ---
 
@@ -195,12 +243,13 @@ Dos formas de resolverlo:
 
 ## 🚧 Pendiente
 
-Del cobertor ya está probado en hardware lo eléctrico: **los dos motores giran** con
-`/motor_a` y `/motor_b`, a la velocidad que fija `/velocidad`. Falta:
-
-- **Conectar los 2 fines de carrera** y verificar que corten el movimiento (con `/status`
-  se comprueba sin mover ningún motor: ver `CABLEADO-PASO-A-PASO.md`).
+- **Tira WS2812**: el código está listo y compila, pero **todavía no se probó en hardware**.
+  El paso a paso para conectarla y probarla está en `CABLEADO-PASO-A-PASO.md`.
+- **Conectar los 2 fines de carrera** del cobertor y verificar que corten el movimiento (con
+  `/status` se comprueba sin mover ningún motor: ver `CABLEADO-PASO-A-PASO.md`).
 - **Montar el mecanismo** (rodillo + cables + lona) y definir el sentido de giro de cada
   motor; si alguno gira al revés, se invierten sus dos cables en el L298N.
-- **Tira WS2812**: reemplaza a los 8 LEDs, que están desconectados esperándola. Va con
-  fuente propia de 5V, nunca alimentada desde el ESP32; sólo se comparte el GND.
+- **Histéresis del calentador**: son 5 °C, mucho para una pileta. Falta decidir si baja a 2 °C.
+
+Del cobertor ya está probado lo eléctrico: **los dos motores giran** con `/motor_a` y
+`/motor_b`, a la velocidad que fija `/velocidad`.

@@ -15,13 +15,17 @@
 
 ## Sistema 2 — Luces al ritmo de la música
 
-- [x] Sensor de sonido leído por el ESP32 (pin GPIO34, módulo alimentado a 5V)
-- [x] Detección de ritmo por volumen pico a pico con base adaptativa (la FFT se eliminó
-      en la v3: con esta señal no aportaba información confiable)
+- [x] Micrófono leído por el ESP32 (pin GPIO34, módulo alimentado a 5V)
 - [x] Sensor validado con datos reales: rango dinámico de más de 30× (2026-08-06)
-- [x] 4 LEDs con efecto disco según la música
 - [x] Control por Telegram (auto / ON / OFF)
-- [x] Verificado funcionando (archivo "posta" de los compañeros)
+- [x] **v5 — Análisis de espectro real** (2026-08-07): FFT de 256 muestras a 10 kHz con
+      separación en graves / medios / agudos, ganancia automática por banda y detección de
+      golpes por energía del último segundo
+- [x] **Tira WS2812 de 15 píxeles** reemplaza a los 8 LEDs, con 4 efectos y limitador de
+      corriente por software (permite alimentarla del ESP32 sin una tercera fuente)
+- [ ] **Probar la tira en hardware** — el código compila pero todavía no se conectó
+- [ ] Con `/onda` y `/trace`, verificar en el taller la calidad real de la señal y ajustar
+      el piso del control automático de ganancia si hiciera falta
 
 ## Sistema 3 — Cobertor automático retráctil
 
@@ -293,6 +297,94 @@ el control remoto sin intervención, pero un reinicio deja el calentador en OFF 
 - **Opus 5**: auditoría del cableado, investigación en documentación oficial, reasignación de
   pines, arreglo de los dos bugs de concurrencia, comandos de prueba y reescritura de los
   documentos.
+
+### Sesión 2026-08-07 — Luces v5: la tira WS2812 y el análisis de espectro
+
+Llegó la tira WS2812 (rollo de 5 m, 30 LED/m) y Mariano pidió reemplazar los 8 LEDs, dejando
+todo listo para conectar y probar en una sola visita al taller. Pidió además reinvestigar el
+sistema de luces entero —"siento que hay mucha basura"— y reescribirlo desde cero.
+
+**El hallazgo que cambió el plan: el micrófono SÍ entrega audio real**
+
+La bitácora del 2026-08-06 dejó abierta la pregunta de si el módulo entregaba audio o una
+envolvente rectificada. La documentación del KY-037 la responde: el pin `AO` es la señal
+**cruda del electret CMA-6542PF, sin amplificar**; el LM393 de la placa **es un comparador,
+no un amplificador**, y sólo maneja la salida `DO`. El potenciómetro tampoco toca el `AO`.
+
+O sea que por el `AO` viaja la onda completa, con toda su información de frecuencia. **La FFT
+se puede hacer.** Se había eliminado en la v3 con razón —el micrófono estaba a 3,3 V y daba 17
+counts de pico a pico— pero desde que pasó a 5 V da hasta 1040: treinta veces más señal. *La
+conclusión de la v3 había quedado vencida por un cambio de hardware y nadie la revisó.*
+
+**Cómo se hace en la vida real (investigado antes de diseñar)**
+
+Se tomó como referencia [WLED sound-reactive](https://kno.wled.ge/advanced/audio-reactive/),
+que es el estándar de facto: digitaliza a **10240 Hz**, reparte en bandas con escalado
+logarítmico o raíz cuadrada, aplica **control automático de ganancia** y suaviza con caída
+lenta. Los 10 kHz que ya usábamos coinciden con esa referencia. Para los golpes se usó el
+algoritmo clásico de energía sonora (flipcode/GameDev): energía instantánea contra el promedio
+del último segundo, con el umbral derivado de la dispersión del propio historial.
+
+**Lo que se hizo**
+
+- **Sistema de luces reescrito de cero.** Cadena nueva: captura de 256 muestras a 10 kHz →
+  quitar DC + ventana de Hann → FFT → tres bandas (graves 78–234 Hz, medios 234–2000 Hz,
+  agudos 2–5 kHz) → ganancia automática **por banda** → suavizado → detección de golpes.
+  Unos 35 cuadros por segundo, mejor que los 28 de antes.
+- **Cuatro efectos** con identidad propia: espectro (3 zonas), mezcla (color por bandas),
+  cometa (con estela) y arcoíris. Sin música, respiración lenta. Corrección de gamma para que
+  los degradados no salgan escalonados.
+- **Limitador de corriente por software**: antes de cada cuadro se estima el consumo y, si se
+  pasa del presupuesto, se atenúa todo el cuadro. Es lo que permite colgar la tira del propio
+  ESP32 sin una tercera fuente. Se calcula sobre el color **post-gamma**, que es el que el LED
+  muestra de verdad.
+- **Nivel lógico resuelto sin comprar nada**: el WS2812B exige 0,7 × su alimentación, y el pin
+  `VIN` no da 5,0 V sino ~4,7 V por el diodo Schottky de la placa. El umbral baja a 3,29 V y
+  el 3,3 V del ESP32 alcanza. **Hay que medirlo en el taller**: si la placa diera 5,0 V
+  clavados, el margen desaparece.
+- **Comandos nuevos**: `/efecto`, `/leds`, `/brillo`, `/corriente`, `/orden`, `/luces_test`,
+  `/espectro`, `/onda`. Todos guardados en NVS, para calibrar en el taller sin recompilar.
+
+**Código eliminado (la "basura" que Mariano detectó)**
+
+Mariano avisó que **sólo hay un micrófono conectado**, no dos. Todo el canal DO era código
+para hardware inexistente: `MIC_DO_PIN`, `golpeDO`, conteo de flancos, `FLANCOS_DO_MAXIMO`,
+`fuenteGolpe` con sus tres comandos `/sonido_*`. Se fue también la base adaptativa
+exponencial, los 4 pines de LED y la sombra rotante. Se borró `PROTOCOLO-TALLER.md`, que
+quedaba contradictorio (calibraba un potenciómetro de un módulo que no está conectado).
+
+**Cinco hallazgos de la auditoría previa**
+
+1. 🔴 **El ADC se leía desde los dos núcleos.** `/diag` hacía 500 `analogRead()` desde la tarea
+   de Telegram (núcleo 0) mientras `medirSonido()` leía el mismo ADC1 en el loop (núcleo 1).
+   Los periféricos del ESP32 necesitan un solo dueño. Ahora `/diag` **reporta** lo que midió el
+   núcleo 1 en vez de medir por su cuenta.
+2. 🔴 **Los comandos encendían luces desde el núcleo 0.** Inofensivo con `digitalWrite`, fatal
+   con la tira: sería mandar datos por el RMT desde el núcleo del WiFi, pisando un envío en
+   curso. Ahora los comandos sólo cambian el modo, como el README ya decía que hacían.
+3. 🟠 **Variables compartidas entre núcleos sin `volatile`** (`modoLuces`, `modoCalentador`,
+   `tempObjetivo`, `trazaSonidoActiva`): funcionaban por casualidad del optimizador.
+4. 🟠 La base adaptativa que se cegaba con música sostenida (ya diagnosticada) — resuelta.
+5. 🟡 **Un reinicio por caída de tensión era invisible.** Ahora el arranque informa el motivo
+   (`esp_reset_reason`): brownout, watchdog o panic. Si la tira hace caer los 5 V, se ve.
+
+**Decisión de alimentación**: la tira se cuelga del `VIN` del ESP32. **Se descubrió que ese
+riel ya está bastante cargado** —ESP32 150–250 mA + LCD 30 mA + relé 75 mA + micrófono 5 mA =
+260 a 460 mA, contra los 500 mA de un USB 2.0—, así que el presupuesto de fábrica quedó en
+**120 mA** y el limitador es el que lo garantiza. Las dos fuentes del proyecto no se tocan.
+
+**Gate**: compilado con `arduino-cli` (core esp32 3.3.10) → **sin errores**, 86 % de flash y
+16 % de RAM. El único warning es el conocido de LiquidCrystal I2C.
+
+**Plan completo**: `docs/PLAN-LUCES-V5-ESPECTRO.md`. **Guía de conexión y prueba**:
+`PiletaInteligente/CABLEADO-PASO-A-PASO.md` (pasos 4 y 5 + la sección "PRUEBA DE LAS LUCES").
+
+**Pendiente para el taller**: conectar la tira y probar. Nada de esto se verificó en hardware.
+
+#### Atribución por modelo (sesión 2026-08-07)
+- **Opus 5**: investigación (KY-037, WS2812B, WLED, Adafruit NeoPixel, algoritmos de beat
+  detection), auditoría del código, plan v5, reescritura completa del sistema de luces y
+  actualización de toda la documentación.
 
 #### Atribución por modelo (sesión 2026-07-23)
 - **Opus 4.8**: /diag, pico a pico + DC removal, luces binarias, efecto en negativo (commits

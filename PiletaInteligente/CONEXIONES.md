@@ -6,9 +6,9 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 > ⚠️ **Reglas de oro del cableado (leer antes de conectar):**
 > 1. **Todos los GND van juntos** (ESP32, L298N, relé, fuente, sensores). Sin GND común, nada funciona bien.
 > 2. **Nunca metas 5V o 12V a un pin GPIO** del ESP32: los pines son de **3.3V**. Se queman con más.
-> 3. El **sensor de sonido 1 (AO) se alimenta a 5V/VIN**: el módulo pide 4-6V y a 3.3V daba una
->    señal demasiado débil. Verificado con `/diag`: el Máximo debe quedar **por debajo de 3000**
->    para no dañar el GPIO34. El **módulo 2 (DO), en cambio, va a 3.3V** — nunca a 5V.
+> 3. El **micrófono se alimenta a 5V/VIN**: el módulo pide 4-6V y a 3.3V daba una señal
+>    demasiado débil. Verificado con `/diag`: el Máximo debe quedar **por debajo de 3000**
+>    para no dañar el GPIO34. Hay **un solo micrófono**: el segundo módulo ya no se usa.
 > 4. **Los pines no son intercambiables.** Algunos del ESP32 hacen cosas mientras el chip
 >    arranca (GPIO5 y GPIO14 emiten un pulso; GPIO5, GPIO0, GPIO2, GPIO12 y GPIO15 se leen al
 >    encender para configurar el chip). Por eso el cobertor usa sólo pines "tranquilos": del
@@ -27,12 +27,8 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 | GPIO26 | Calentador | Módulo relé — IN |
 | GPIO21 | Compartido | LCD — SDA |
 | GPIO22 | Compartido | LCD — SCL |
-| GPIO16 | Luces | LEDs VERDES (los 2, cada uno con 220Ω) |
-| GPIO17 | Luces | LEDs ROJOS (los 2, cada uno con 220Ω) |
-| GPIO14 | Luces | LEDs AZULES (los 2, cada uno con 220Ω) |
-| GPIO5  | Luces | LEDs BLANCOS (los 2, cada uno con 220Ω) |
-| GPIO34 | Luces | Sensor de sonido 1 — salida analógica (AO) |
-| GPIO35 | Luces | Sensor de sonido 2 — salida digital (DO, golpes por hardware) |
+| GPIO16 | Luces | **Tira WS2812 — DIN** (con 440Ω en serie: dos de 220Ω) |
+| GPIO34 | Luces | Micrófono KY-037 — salida analógica (AO), módulo a 5V |
 | GPIO13 | Cobertor | L298N — IN1 (motor A) |
 | GPIO25 | Cobertor | L298N — IN2 (motor A) |
 | GPIO27 | Cobertor | L298N — ENA (PWM motor A) |
@@ -41,9 +37,10 @@ Es la fuente de verdad: los pines de acá son los que están en `PiletaInteligen
 | GPIO18 | Cobertor | L298N — ENB (PWM motor B) |
 | GPIO23 | Cobertor | Fin de carrera CERRADO (COM a GND, NO al pin) |
 | GPIO19 | Cobertor | Fin de carrera ABIERTO (COM a GND, NO al pin) |
-| 3.3V | — | DS18B20, sensor de sonido, pull-ups |
-| 5V (Vin) | — | LCD, módulo relé (lado lógico) |
+| 3.3V | — | DS18B20, pull-ups |
+| 5V (Vin) | — | LCD, módulo relé (lado lógico), micrófono, **tira WS2812** |
 | GND | — | **común a todo** |
+| GPIO17 · GPIO14 · GPIO5 · GPIO35 | — | *libres* (eran de los 8 LEDs y del 2do micrófono) |
 
 ---
 
@@ -87,32 +84,35 @@ Módulo relé
   conectar la carga.
 - Sin la resistencia de 4.7kΩ, el sensor lee −127 (error) y el calentador no arranca.
 
-## 2️⃣ Sistema Luces disco (8 LEDs = 4 colores × 2 lados)
+## 2️⃣ Sistema Luces disco (tira WS2812 + micrófono)
 
 ```
-Sensor de sonido 1 (volumen, canal analógico)
+Micrófono KY-037 (es el ÚNICO micrófono del sistema)
    VCC ──── VIN (5V)  (el módulo pide 4-6V; su AO es de nivel bajo y es segura)
    GND ──── GND
-   AO  ──── GPIO34    (salida ANALÓGICA; el DO de este módulo queda libre)
+   AO  ──── GPIO34    (salida ANALÓGICA; el DO de este módulo NO se usa)
 
-Sensor de sonido 2 (golpes por hardware)  ⚠️ a 3.3V, NUNCA a 5V
-   VCC ──── 3.3V
+Tira WS2812 — 15 píxeles (50 cm de una tira de 30 LED/m)
+   5V  ──── VIN (5V) del ESP32
    GND ──── GND
-   DO  ──── GPIO35    (salida DIGITAL; el AO de este módulo queda libre)
-
-LEDs (por cada color, 2 LEDs: uno de cada lado de la pileta)
-   GPIO16 ──[220Ω]──►|── GND     (LED verde  lado A)
-          └─[220Ω]──►|── GND     (LED verde  lado B)
-   GPIO17 ──[220Ω]──►|── GND     (LED rojo   lado A)
-          └─[220Ω]──►|── GND     (LED rojo   lado B)
-   GPIO14 ──[220Ω]──►|── GND     (LED azul   lado A)
-          └─[220Ω]──►|── GND     (LED azul   lado B)
-   GPIO5  ──[220Ω]──►|── GND     (LED blanco lado A)
-          └─[220Ω]──►|── GND     (LED blanco lado B)
+   DIN ──── [220Ω]──[220Ω]──── GPIO16     (440Ω en serie, como pide Adafruit)
 ```
 
-- Cada color usa **1 pin** que maneja **los 2 LEDs** (uno de cada lado) → ambos lados bailan igual.
-- `►|` es el LED: la patita larga (+, ánodo) va del lado de la resistencia; la corta (−) a GND.
+- **Un solo cable de datos** maneja los 15 píxeles: cada uno se queda con su color y le pasa
+  el resto al siguiente. Por eso quedaron libres GPIO17, GPIO14 y GPIO5.
+- **La tira tiene dirección.** El cable de datos entra por el extremo que dice `DIN`, hacia
+  donde apuntan las flechas impresas. Al revés no enciende nada (pero no se rompe).
+- **El cable de datos, corto** (20–30 cm): es la causa número uno de fallas al manejar una
+  tira de 5V con la lógica de 3,3V del ESP32.
+- **Por qué anda sin adaptador de nivel:** la tira necesita 0,7 × su alimentación para leer un
+  "1". Alimentada desde el `VIN` recibe ~4,7 V (la placa tiene un diodo entre el USB y ese
+  pin), así que el umbral baja a 3,29 V y el 3,3 V del ESP32 alcanza. **Medilo antes de
+  conectar**: si tu placa da 5,0 V clavados, el margen desaparece.
+- **Por qué no necesita fuente propia:** el programa lleva un **limitador de corriente**. Antes
+  de mandar cada cuadro calcula el consumo y, si se pasa del presupuesto (`/corriente`), baja
+  el brillo hasta que entre. Sin eso, 15 píxeles en blanco pleno pedirían 900 mA.
+- ⚠️ Los cables de 5V y GND de la tira van **directo al ESP32**, no por el tramo de protoboard
+  donde está el micrófono: los tirones de corriente de la tira entran en el ADC como ruido.
 
 ## 3️⃣ Sistema Cobertor (L298N + 2 motores + 2 fines de carrera)
 
@@ -173,9 +173,14 @@ Son **tres alimentaciones independientes**; no se mezclan entre sí:
 
 | Alimenta | A quién | Cuánto |
 |---|---|---|
-| USB de la notebook | El ESP32 — y por su intermedio el LCD, el lado de control del relé y los sensores | 5V |
+| USB de la notebook | El ESP32 — y por su intermedio el LCD, el lado de control del relé, el micrófono y **la tira de luces** | 5V |
 | Fuente MASTER | El cartucho calefactor, a través del relé | 12V |
 | Fuente SLAVE | El L298N y los 2 motores del cobertor | ~8V |
+
+⚠️ **El riel de 5V está bastante cargado**: el ESP32 (150–250 mA), el LCD (~30 mA), el relé
+cuando está activo (~75 mA) y el micrófono (~5 mA) suman entre 260 y 460 mA, y un USB 2.0
+entrega 500 mA. Por eso la tira va con el limitador en `/corriente 120` mientras el ESP32 esté
+enchufado a la notebook; con un cargador de celular de 2A se puede subir a 500.
 
 ```
    Notebook ──USB──► ESP32 ──señales──► L298N ──► Motor A y Motor B
