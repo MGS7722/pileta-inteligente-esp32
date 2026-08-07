@@ -8,11 +8,11 @@
 //     1) CALENTADOR   -> Sensor de temperatura DS18B20 + relé.
 //                        Arranca APAGADO; se activa desde Telegram
 //                        (automático con histéresis, o forzado ON).
-//     2) LUCES DISCO  -> Sensor de sonido + 8 LEDs (4 colores x 2
-//                        lados). En modo AUTO: sin música quedan
-//                        prendidas, con música una "sombra" recorre
-//                        los colores y cada golpe del ritmo las apaga
-//                        un instante (strobe). Arrancan APAGADAS.
+//     2) LUCES DISCO  -> Micrófono + tira WS2812 de 15 píxeles.
+//                        El sonido se analiza por FFT y se separa en
+//                        GRAVES / MEDIOS / AGUDOS; cada efecto pinta
+//                        la tira con esas tres bandas y destella en
+//                        cada golpe del ritmo. Arranca APAGADA.
 //     3) COBERTOR     -> 2 motores por L298N + 2 fines de carrera.
 //                        Abre/cierra desde Telegram; frena solo al
 //                        llegar al tope.
@@ -25,20 +25,19 @@
 //       (OJO: ArduinoJson tiene que ser la versión 6, NO la 7)
 //   ------------------------------------------------------------
 //
-//   CONEXIONES (pines del ESP32) — ver detalle en COMPONENTES.md:
+//   CONEXIONES (pines del ESP32) — ver detalle en CONEXIONES.md:
 //     GPIO4   -> DS18B20 (dato)   [resistencia 4.7k a 3.3V]
 //     GPIO26  -> Relé (señal S)   [calentador]
 //     GPIO21  -> LCD SDA (I2C)
 //     GPIO22  -> LCD SCL (I2C)
-//     GPIO16  -> LEDs VERDES  (los 2, uno por lado)
-//     GPIO17  -> LEDs ROJOS
-//     GPIO14  -> LEDs AZULES
-//     GPIO5   -> LEDs BLANCOS
-//     GPIO34  -> Sensor de sonido (analógico)
+//     GPIO16  -> Tira WS2812, entrada de DATOS (con 440 ohm en serie)
+//     GPIO34  -> Micrófono KY-037, salida AO (analógica). Módulo a 5V
 //     GPIO13,25,27 -> L298N motor A (IN1, IN2, ENA-PWM)
 //     GPIO32,33,18 -> L298N motor B (IN3, IN4, ENB-PWM)
 //     GPIO23  -> Fin de carrera CERRADO (con pull-up interno)
 //     GPIO19  -> Fin de carrera ABIERTO (con pull-up interno)
+//
+//   Libres tras el cambio a la tira: GPIO17, GPIO14, GPIO5, GPIO35.
 // ============================================================
 
 #include "config.h"
@@ -54,6 +53,9 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 
+#include <Adafruit_NeoPixel.h>
+#include <arduinoFFT.h>
+
 // ============================================================
 //   PINES
 // ============================================================
@@ -62,22 +64,18 @@
 #define PIN_DS18B20 4     // Sensor de temperatura del agua
 #define PIN_RELE    26    // Señal del relé que prende el calentador
 
-// --- Luces disco (Sistema 2) ---
-// 8 LEDs = 4 colores x 2 lados. Cada pin maneja los 2 LEDs del mismo
-// color (uno de cada lado), cada LED con su resistencia de 220 ohm.
+// --- Luces disco (Sistema 2): tira WS2812 + micrófono ---
 //
-// GPIO5 y GPIO14 emiten un pulso mientras el ESP32 arranca, ANTES de que
-// corra este programa. Un LED que destella medio segundo en el arranque no
-// molesta a nadie; por eso los colores viven en esos dos pines y el cobertor
-// se quedó con los pines "tranquilos" (ver el bloque del cobertor).
-#define LED_VERDE   16
-#define LED_ROJO    17
-#define LED_AZUL    14
-#define LED_BLANCO  5
-#define MIC_PIN     34    // Sensor de sonido 1, salida AO. ADC1 (no usar ADC2: choca con WiFi).
-#define MIC_DO_PIN  35    // Sensor de sonido 2, salida DO (golpes por hardware).
-                          // El módulo 2 se alimenta a 3.3V: así su DO nunca supera
-                          // los 3.3V que tolera el ESP32. NO alimentarlo con 5V.
+// La tira lleva UN solo cable de datos: cada píxel se pasa al siguiente lo que
+// no le corresponde. Va con una resistencia de 440 ohm (dos de 220 en serie) en
+// serie con la entrada DIN, como especifica Adafruit, para proteger el primer
+// píxel de los picos de conmutación.
+//
+// GPIO16 se elige a propósito: GPIO5 y GPIO14 emiten un pulso mientras el ESP32
+// arranca, y un pulso en la línea de datos deja píxeles encendidos en colores al
+// azar hasta que el programa toma el control. GPIO16 y GPIO17 están tranquilos.
+#define TIRA_PIN    16    // Tira WS2812 — entrada DIN (por 440 ohm)
+#define MIC_PIN     34    // Micrófono KY-037, salida AO. ADC1 (el ADC2 choca con WiFi).
 
 // --- Cobertor (Sistema 3): L298N + 2 motores + 2 fines de carrera ---
 //
@@ -113,8 +111,9 @@
 
 // La temperatura objetivo se cambia desde Telegram con /temperatura y queda
 // guardada en la memoria del ESP32 (sobrevive reinicios). 23.0 es el valor
-// inicial de fábrica.
-float tempObjetivo = 23.0;
+// inicial de fábrica. `volatile` porque la escribe Telegram (núcleo 0) y la lee
+// el loop (núcleo 1).
+volatile float tempObjetivo = 23.0;
 const float HISTERESIS    = 5.0;    // Margen para no prender/apagar a cada rato
 
 // El módulo relé de este proyecto es ACTIVO-ALTO: HIGH energiza la bobina y
@@ -126,47 +125,143 @@ const int RELE_ON  = HIGH;
 const int RELE_OFF = LOW;
 
 // ============================================================
-//   AJUSTES DE LAS LUCES / SONIDO
+//   AJUSTES DE LA TIRA WS2812
 // ============================================================
 
-// --- Medición del sonido (sin FFT) ---
-// Con la señal débil de este micrófono, el análisis de frecuencias no aporta
-// información confiable: lo único robusto es el VOLUMEN pico a pico. La ventana
-// de ~35 ms es clave: un golpe de bombo dura 50-100 ms, y con ventanas más
-// cortas la medición cae "entre" los picos y el beat se pierde.
-const int MUESTRAS_SONIDO = 350;                 // 350 muestras a 10 kHz = ~35 ms
-const unsigned long PERIODO_MUESTREO_US = 100;   // 10 kHz de muestreo
+// Tope de píxeles que el programa puede manejar. Reserva la memoria del cuadro
+// una sola vez, al arrancar: 150 x 3 bytes = 450 bytes, nada para el ESP32.
+const int MAX_LEDS = 150;
 
-// Las luces trabajan SOLO en dos estados: prendidas o apagadas (nunca a media
-// luz), para no forzar los LEDs y para no meter el ruido eléctrico del PWM.
+// Cuántos píxeles hay conectados de verdad. Se ajusta con /leds y queda guardado
+// en la memoria del ESP32, así se puede cortar más tira sin recompilar.
+// 15 píxeles = 50 cm de una tira de 30 LED/m.
 //
-// --- Detección de ritmo ADAPTATIVA ---
-// El sistema aprende solo el nivel de ruido ambiente (la "base") y considera
-// GOLPE cuando el volumen instantáneo la supera con margen. Así reacciona igual
-// con música fuerte o suave, sin depender de un umbral fijo.
+// Lo escribe Telegram (núcleo 0) y lo lee el dibujo (núcleo 1). Es seguro sin
+// candados: en el ESP32 escribir un entero alineado es atómico, así que nunca se
+// lee un valor a medio escribir. Lo peor que puede pasar es que un único cuadro
+// se dibuje con el número nuevo antes de que la tira se reconfigure, y la
+// librería simplemente ignora los píxeles que se salen de su largo actual.
+int numLeds = 15;
+
+// Brillo máximo, en porcentaje. Es un tope: el limitador de corriente puede
+// bajarlo todavía más si el cuadro consumiría demasiado.
+int brilloPorcentaje = 70;
+
+// PRESUPUESTO DE CORRIENTE, en miliamperes. Es la pieza que permite alimentar la
+// tira del propio ESP32 sin una tercera fuente: antes de mandar cada cuadro se
+// calcula lo que consumiría y, si se pasa de este número, se baja el brillo de
+// todo el cuadro hasta que entre. La tira NO PUEDE superar este límite.
 //
-// Calibrado con mediciones reales del módulo 1 alimentado a 5V (2026-08-06):
-//   silencio      -> pico a pico  33
-//   música fuerte -> pico a pico  82
-// Los valores anteriores venían de la señal más débil de 3.3V (silencio ~17) y
-// habían quedado POR DEBAJO del ruido de fondo, así que ya no filtraban nada.
-const float FACTOR_GOLPE = 1.30;  // El volumen debe superar base*FACTOR para ser golpe
-const int   GOLPE_MINIMO = 50;    // Piso absoluto: nunca disparar por debajo de esto
-const int   SONIDO_MINIMO = 45;   // Piso de "hay sonido" (para elegir efecto A/B)
+//   120 mA -> ESP32 alimentado por el USB de la notebook (el riel de 5V ya
+//             alimenta al LCD, al relé y al micrófono: queda poco margen)
+//   500 mA -> ESP32 alimentado por un cargador de celular de 2A
+int corrienteMaximaMa = 120;
 
-// Velocidad con la que la base aprende el ambiente. Sube MUY lento para que una
-// canción sostenida no "infle" la base hasta taparse a sí misma (el error que
-// dejaba el umbral por encima de los picos reales), y baja rápido para volver
-// enseguida al silencio cuando la música para.
-const float ALFA_BASE_SUBE = 0.008f;   // ~4,4 s de constante de tiempo
-const float ALFA_BASE_BAJA = 0.060f;   // ~0,6 s
-const unsigned long DURACION_APAGON_MS = 110;  // Cuánto quedan apagadas en cada golpe
-const unsigned long REFRACTARIO_MS     = 150;  // Espera mínima entre golpes seguidos
+// Consumo de un canal (rojo, verde o azul) a fondo, en miliamperes. Un píxel en
+// blanco pleno son los tres canales juntos: 60 mA. Se usa el valor de catálogo,
+// que queda del lado seguro para un limitador.
+const float MA_POR_CANAL = 20.0f / 255.0f;
 
-// Canal DO (2do micrófono): un golpe real produce POCOS cambios de estado por
-// ventana; un pin desconectado (flotante) produce muchísimos. Por encima de este
-// tope, la lectura del DO se descarta como ruido.
-const int FLANCOS_DO_MAXIMO = 8;
+// Consumo del chip de cada píxel aunque esté apagado.
+const float MA_PIXEL_EN_REPOSO = 1.0f;
+
+// Orden de los bytes de color. Los WS2812B son GRB, pero hay clones RGB con el
+// mismo aspecto. Si /luces_test anuncia ROJO y se ve VERDE, es esto: se corrige
+// desde Telegram con /orden, sin recompilar.
+bool tiraEsGRB = true;
+
+// Efecto del modo AUTO. Se cambia con /efecto y queda guardado.
+enum Efecto { EFECTO_ESPECTRO = 1, EFECTO_MEZCLA, EFECTO_COMETA, EFECTO_ARCOIRIS };
+const int EFECTO_MINIMO = 1;
+const int EFECTO_MAXIMO = 4;
+int efectoActual = EFECTO_ESPECTRO;
+
+// ============================================================
+//   AJUSTES DEL ANÁLISIS DE SONIDO (FFT)
+// ============================================================
+
+// El micrófono KY-037 entrega por su pin AO la señal CRUDA del electret: la onda
+// de sonido completa, sin rectificar (el LM393 de la placa es un comparador, no
+// un amplificador, y sólo maneja la salida DO). Por eso se puede analizar el
+// espectro y separar graves, medios y agudos.
+//
+// La FFT se había eliminado en la v3, y con razón: el micrófono estaba a 3,3V y
+// daba 17 counts de pico a pico. Alimentado a 5V da hasta 1040 (medido en el
+// taller): treinta veces más señal, de sobra para separar tres bandas.
+//
+// 256 muestras a 10 kHz es el punto justo:
+//   - 10 kHz permite analizar hasta 5 kHz (la mitad, por Nyquist), que cubre todo
+//     el contenido rítmico de la música. Es la misma frecuencia que usa WLED.
+//   - 256 muestras -> ventana de 25,6 ms y resolución de 39 Hz por bin.
+//     Con 512 la resolución sería el doble, pero la ventana treparía a 51 ms y el
+//     refresco caería a 19 cuadros por segundo: se vería a los tirones.
+const int MUESTRAS_FFT = 256;
+const unsigned long PERIODO_MUESTREO_US = 100;   // 100 us = 10 kHz
+const float FRECUENCIA_MUESTREO_NOMINAL = 10000.0f;
+
+// Cortes de las tres bandas, en hertz.
+//
+// Los graves arrancan en 78 Hz y no más abajo a propósito: de 39 a 78 Hz cae el
+// zumbido de 50 Hz de la red eléctrica, que cualquier micrófono sin blindaje
+// capta de la fuente. Incluirlo sería alimentar los graves con el ruido de la
+// instalación en vez de con la música. El bombo se detecta igual, por sus
+// armónicos de 100 a 200 Hz. Con /espectro se verifica si ese zumbido existe.
+const float BANDA_GRAVES_DESDE = 78.0f;    // bombo, bajo, tom
+const float BANDA_GRAVES_HASTA = 234.0f;
+const float BANDA_MEDIOS_DESDE = 234.0f;   // voz, guitarra, piano, caja
+const float BANDA_MEDIOS_HASTA = 2000.0f;
+const float BANDA_AGUDOS_DESDE = 2000.0f;  // platos, hi-hat, brillo
+const float BANDA_AGUDOS_HASTA = 5000.0f;
+
+// --- Control automático de ganancia (AGC), una por banda ---
+//
+// Sin AGC el sistema anda con un volumen y con otro no. Y hay un problema extra:
+// en música real los graves son 10 o 20 veces más fuertes que los agudos, así que
+// con una escala común la banda de agudos quedaría siempre apagada. Por eso cada
+// banda se normaliza contra SU PROPIO máximo reciente.
+const float AGC_DECAIMIENTO = 0.999f;   // el máximo baja ~8 s si no se renueva
+
+// Piso del AGC: es imprescindible. Sin él, en silencio el AGC amplificaría el
+// ruido de fondo hasta el tope y la tira bailaría sola con el zumbido ambiente.
+// El valor se ve en /espectro, para poder ajustarlo con datos reales.
+const float AGC_PISO = 5.0f;
+
+// --- Suavizado visual: ataque instantáneo, caída suave ---
+// El golpe tiene que verse en el acto, pero apagarse con elegancia. Sin esto, a
+// 35 cuadros por segundo la tira parpadea de forma desagradable.
+const float CAIDA_NIVEL = 0.25f;   // cuánto se acerca al valor nuevo al bajar
+
+// --- Detección de golpes (beat) ---
+//
+// El beat NO sale de la FFT: sale de comparar la energía instantánea de los
+// GRAVES contra el promedio del último segundo (algoritmo clásico de energía
+// sonora, flipcode/GameDev). A diferencia de la base exponencial que usaba la
+// versión anterior —que con música sostenida se inflaba hasta tapar los propios
+// golpes que debía detectar— un promedio de ventana deslizante no puede
+// dispararse sin techo y se recupera en un segundo exacto.
+const int HISTORIAL_BEAT = 32;   // 32 ventanas de ~28 ms = 0,9 segundos
+
+// El umbral se calcula solo a partir de la dispersión del historial: si los
+// golpes están muy marcados se puede ser menos exigente; si la señal es plana hay
+// que exigir más para no disparar con ruido. Se usa el coeficiente de variación
+// (desvío / promedio) porque es adimensional y vale en cualquier escala.
+//   C = FACTOR_BASE - FACTOR_RANGO * min(1, desvio/promedio)
+// Música marcada -> C ~ 1,20.  Señal plana -> C ~ 1,45.
+const float FACTOR_BASE  = 1.50f;
+const float FACTOR_RANGO = 0.50f;
+const float FACTOR_MINIMO = 1.15f;
+
+// Sin tiempo refractario, un solo golpe de bombo dispara tres veces seguidas.
+const unsigned long REFRACTARIO_BEAT_MS = 150;
+const unsigned long DURACION_DESTELLO_MS = 110;   // cuánto dura el flash del golpe
+
+// Umbral de "hay música", en pico a pico crudo del ADC. Calibrado con 116
+// mediciones reales del taller (2026-08-06): silencio 9-36, música 60-130,
+// golpes 250-500. Por debajo de esto la tira pasa a modo respiración.
+const int SONIDO_MINIMO = 45;
+
+// Memoria de "hay música": evita que la tira se apague entre dos beats.
+const unsigned long MEMORIA_MUSICA_MS = 800;
 
 // ============================================================
 //   AJUSTES DEL COBERTOR
@@ -208,43 +303,106 @@ Preferences preferencias;   // Memoria no volátil (guarda la temperatura objeti
 WiFiClientSecure     client;
 UniversalTelegramBot bot(BOT_TOKEN, client);
 
+// La tira se crea con el tope de píxeles y se ajusta al número real en el setup.
+// Un solo objeto en todo el programa: la librería guarda el buffer del RMT en
+// variables estáticas compartidas, así que dos instancias se pisarían.
+Adafruit_NeoPixel tira(MAX_LEDS, TIRA_PIN, NEO_GRB + NEO_KHZ800);
+
+// Buffers de la FFT. vReal entra con las muestras y sale con las magnitudes de
+// cada frecuencia; vImag es el espacio de trabajo que necesita el algoritmo.
+float vReal[MUESTRAS_FFT];
+float vImag[MUESTRAS_FFT];
+
+// El último parámetro (true) precalcula los factores de la ventana una sola vez,
+// en lugar de recalcularlos en cada cuadro.
+ArduinoFFT<float> fft(vReal, vImag, MUESTRAS_FFT, FRECUENCIA_MUESTREO_NOMINAL, true);
+
 // ============================================================
 //   ESTADO DEL SISTEMA
 // ============================================================
 
 // --- Calentador ---
+// `volatile` por lo mismo que el modo de las luces: lo escribe Telegram en el
+// núcleo 0 y lo lee el loop en el núcleo 1.
 enum ModoCalentador { CALEF_AUTO, CALEF_ON, CALEF_OFF };
-ModoCalentador modoCalentador = CALEF_OFF;   // Por defecto: apagado (se activa desde Telegram)
+volatile ModoCalentador modoCalentador = CALEF_OFF;   // Arranca apagado
 bool  calentadorEncendido = false;
 float ultimaTemp = 0.0;
 bool  sensorTempOk = false;
 
 // --- Luces ---
+// `volatile` porque Telegram (núcleo 0) escribe el modo y el loop (núcleo 1) lo
+// lee: sin eso, el compilador puede guardarse el valor en un registro dentro del
+// loop y no enterarse nunca de que llegó un comando.
 enum ModoLuces { LUCES_AUTO, LUCES_ON, LUCES_OFF };
-ModoLuces modoLuces = LUCES_OFF;   // Por defecto: apagadas (se activan desde Telegram)
+volatile ModoLuces modoLuces = LUCES_OFF;   // Arranca apagada; se activa desde Telegram
 
-int    ultimoBrillo  = 0;
-int    ultimoPicoAPico = 0;   // Volumen real medido (max - min de las muestras)
-float  p2pBase = 20;          // Nivel de ruido ambiente aprendido (se adapta solo)
+// --- Medición cruda del micrófono (la calcula el núcleo 1 en cada ventana) ---
+int   ultimoPicoAPico = 0;    // max - min de la ventana: el "volumen"
+int   ultimoMinimo    = 0;
+int   ultimoMaximo    = 0;
+int   ultimoDC        = 0;    // punto de polarización del micrófono
+float frecuenciaRealHz = FRECUENCIA_MUESTREO_NOMINAL;   // medida, no supuesta
 
-// Fuente de detección de golpes: MIXTA usa ambos micrófonos (el que dispare
-// primero); AO solo el análogo; DO solo el detector por hardware del módulo 2.
-enum FuenteGolpe { FUENTE_MIXTA, FUENTE_AO, FUENTE_DO };
-FuenteGolpe fuenteGolpe = FUENTE_MIXTA;
-int  ultimosFlancosDO = 0;    // Cambios de estado del DO en la última ventana
-bool golpeDO = false;         // true si el módulo 2 detectó golpe en la última ventana
-bool golpeAO = false;         // true si el canal analógico detectó golpe en la última ventana
-int  umbralGolpe = 0;         // Umbral vigente (base*FACTOR, nunca menor a GOLPE_MINIMO)
-unsigned long ultimoMomentoConSonido = 0;  // Memoria de 800 ms de "hay música"
-bool hayMusica = false;                    // true mientras se detecta sonido sostenido
-unsigned long inicioApagon = 0;            // Cuándo empezó el último apagón por golpe
+// --- Las tres bandas del espectro ---
+// `crudo` es lo que sale de la FFT; `maximoAgc` es la referencia con la que se
+// normaliza; `nivel` es el valor final de 0 a 1 que usan los efectos.
+struct Banda {
+  float crudo;
+  float maximoAgc;
+  float nivel;
+};
+Banda graves = {0, AGC_PISO, 0};
+Banda medios = {0, AGC_PISO, 0};
+Banda agudos = {0, AGC_PISO, 0};
+
+float volumenGeneral = 0.0f;   // 0 a 1, promedio de las tres bandas ya normalizadas
+float frecuenciaDominanteHz = 0.0f;
+
+// --- Detección de golpes ---
+float historialGraves[HISTORIAL_BEAT];   // energía de graves del último segundo
+int   posHistorial = 0;
+bool  historialLleno = false;
+float promedioGraves = 0.0f;   // los publica /espectro para poder calibrar
+float umbralBeat = 0.0f;
+bool  hayBeat = false;
+unsigned long ultimoBeat = 0;
+unsigned long inicioDestello = 0;
+
+bool hayMusica = false;
+unsigned long ultimoMomentoConSonido = 0;
+
+// --- El cuadro que se va a dibujar ---
+// Los efectos pintan acá los colores IDEALES, sin preocuparse por el consumo.
+// volcarCuadro() es el único que habla con la tira: aplica el brillo, el límite
+// de corriente y la corrección de gamma, y recién ahí manda los datos.
+uint8_t cuadro[MAX_LEDS][3];
+int corrienteEstimadaMa = 0;   // consumo del último cuadro (lo muestra /status)
+
+// --- Pedidos de reconfiguración de la tira ---
+// Cambiar la cantidad de píxeles o el orden de colores reasigna memoria dentro
+// de la librería. Hacerlo desde Telegram (núcleo 0) mientras el loop (núcleo 1)
+// está enviando datos es un cuelgue seguro, así que el comando deja el pedido
+// acá y el loop lo aplica entre dos cuadros.
+volatile bool tiraNecesitaReconfigurar = false;
 
 // --- Traza de calibración (comando /trace) ---
 // Vuelca por el Monitor Serie el pulso del sonido en vivo, para poder calibrar
 // con datos reales en lugar de a ojo. Arranca APAGADA: no ensucia el uso normal.
-bool trazaSonidoActiva = false;
+volatile bool trazaSonidoActiva = false;
 unsigned long ultimaTraza = 0;
 const unsigned long INTERVALO_TRAZA_MS = 100;
+
+// --- Volcado de la onda cruda (comando /onda) ---
+// La captura tiene que correr en el núcleo 1, que es el dueño del ADC, así que
+// el comando sólo levanta el pedido y el loop hace el trabajo.
+volatile bool pedidoVolcarOnda = false;
+
+// --- Prueba de la tira (comando /luces_test) ---
+// Igual que la onda: el comando pide, el loop dibuja.
+volatile bool pruebaTiraActiva = false;
+unsigned long inicioPruebaTira = 0;
+const unsigned long PASO_PRUEBA_MS = 1200;   // cuánto dura cada color de la prueba
 
 // --- Cobertor ---
 // Los mensajes que cruzan de un núcleo al otro viajan en buffers de tamaño fijo,
@@ -317,25 +475,41 @@ char avisoChat[CHAT_ID_MAXIMO];
 void setup() {
   Serial.begin(115200);
 
+  // Por qué se reinició la última vez. Si la tira consume de más y hace caer los
+  // 5V, el ESP32 se reinicia por brownout y arranca como si nada —calentador en
+  // OFF, luces en OFF— sin que nadie sepa por qué. Esto lo hace visible.
+  informarMotivoDelReinicio();
+
   // Calentador apagado al arrancar
   pinMode(PIN_RELE, OUTPUT);
   digitalWrite(PIN_RELE, RELE_OFF);
 
-  // Luces (arrancan APAGADAS; se activan desde Telegram)
-  pinMode(LED_VERDE,  OUTPUT);
-  pinMode(LED_ROJO,   OUTPUT);
-  pinMode(LED_AZUL,   OUTPUT);
-  pinMode(LED_BLANCO, OUTPUT);
-  apagarTodasLasLuces();
+  // Configuración guardada (si nunca se configuró, quedan los valores de fábrica)
+  preferencias.begin("pileta", false);
+  tempObjetivo      = preferencias.getFloat("tempObj", tempObjetivo);
+  velocidadCobertor = preferencias.getUChar("velCobertor", velocidadCobertor);
+  numLeds           = preferencias.getUShort("numLeds", numLeds);
+  brilloPorcentaje  = preferencias.getUChar("brillo", brilloPorcentaje);
+  corrienteMaximaMa = preferencias.getUShort("corriente", corrienteMaximaMa);
+  efectoActual      = preferencias.getUChar("efecto", efectoActual);
+  tiraEsGRB         = preferencias.getBool("tiraGRB", tiraEsGRB);
+
+  // Los valores guardados podrían venir de una versión anterior con otros
+  // rangos: se acotan antes de usarlos, para que un número absurdo en memoria
+  // no deje la tira sin arrancar.
+  numLeds           = constrain(numLeds, 1, MAX_LEDS);
+  brilloPorcentaje  = constrain(brilloPorcentaje, 0, 100);
+  corrienteMaximaMa = constrain(corrienteMaximaMa, 50, 2000);
+  efectoActual      = constrain(efectoActual, EFECTO_MINIMO, EFECTO_MAXIMO);
+
+  // Tira de luces (arranca APAGADA; se activa desde Telegram)
+  tira.begin();
+  aplicarConfiguracionTira();
+  limpiarCuadro();
+  volcarCuadro();
 
   // Cobertor (motores frenados al arrancar)
   setupCobertor();
-
-  // Temperatura objetivo guardada (si nunca se configuró, queda 23.0)
-  preferencias.begin("pileta", false);
-  tempObjetivo = preferencias.getFloat("tempObj", 23.0);
-  fuenteGolpe  = (FuenteGolpe)preferencias.getUChar("fuenteGolpe", FUENTE_MIXTA);
-  velocidadCobertor = preferencias.getUChar("velCobertor", velocidadCobertor);
 
   // Sensor de temperatura
   sensores.begin();
@@ -352,10 +526,9 @@ void setup() {
   delay(2000);
   lcd.clear();
 
-  // Sensores de sonido (1: AO análogo; 2: DO golpes por hardware)
+  // Micrófono (salida AO, analógica). Es el único micrófono conectado.
   pinMode(MIC_PIN, INPUT);
-  pinMode(MIC_DO_PIN, INPUT);   // GPIO35 es solo-entrada; el módulo 2 trae su pull-up
-  analogReadResolution(12);                    // Lecturas de 0 a 4095
+  analogReadResolution(12);                     // Lecturas de 0 a 4095
   analogSetPinAttenuation(MIC_PIN, ADC_11db);   // Rango ~0-3.3V
 
   // WiFi + Telegram
@@ -382,20 +555,64 @@ void setup() {
 //   LOOP
 // ============================================================
 
+// El loop es el dueño exclusivo de dos cosas: el ADC del micrófono y la tira de
+// luces. Ningún comando de Telegram las toca directamente (ver §"pedidos").
+//
+// Una vuelta completa tarda ~28 ms, casi todos gastados en capturar el sonido.
+// Eso da unos 35 cuadros por segundo, suficiente para que el ojo lo vea fluido.
 void loop() {
-  // 1) Sonido y luces → en cada vuelta.
-  medirSonido();
-  actualizarLucesSegunModo();
+  // 1) Pedidos que sólo este núcleo puede atender (reconfigurar la tira, volcar
+  //    la onda cruda). Se resuelven antes de dibujar, nunca en el medio.
+  atenderPedidosPendientes();
 
-  // 2) Cobertor → máquina de estados no bloqueante (frena al llegar al tope).
+  // 2) Sonido: captura, FFT, bandas, AGC y detección de golpes.
+  analizarSonido();
+
+  // 3) Luces: pinta el cuadro y lo manda a la tira.
+  actualizarLuces();
+
+  // 4) Cobertor → máquina de estados no bloqueante (frena al llegar al tope).
   actualizarCobertor();
 
-  // 3) Temperatura + LCD → lectura en dos fases, sin bloquear: la propia función
+  // 5) Temperatura + LCD → lectura en dos fases, sin bloquear: la propia función
   //    lleva sus tiempos (pide la conversión y recoge el valor cuando está listo).
   actualizarTemperatura();
 
   // Telegram NO se atiende acá: vive en su propia tarea, en el otro núcleo.
   // Ver tareaTelegram(). Así sus esperas de varios segundos no frenan el show.
+}
+
+// Por qué arrancó el ESP32 la última vez. Un reinicio por caída de tensión o por
+// watchdog es invisible desde afuera —la placa simplemente aparece "recién
+// encendida"— y es exactamente el tipo de falla que cuesta días encontrar.
+void informarMotivoDelReinicio() {
+  Serial.println();
+  Serial.print("Motivo del ultimo arranque: ");
+
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+      Serial.println("encendido normal.");
+      break;
+    case ESP_RST_BROWNOUT:
+      Serial.println("*** CAIDA DE TENSION (brownout) ***");
+      Serial.println("  La alimentacion de 5V no alcanzo. Si pasa al encender las");
+      Serial.println("  luces, bajar el presupuesto con /corriente.");
+      break;
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_WDT:
+      Serial.println("*** WATCHDOG: una tarea dejo de responder ***");
+      break;
+    case ESP_RST_PANIC:
+      Serial.println("*** PANIC: el programa fallo (excepcion) ***");
+      break;
+    case ESP_RST_SW:
+      Serial.println("reinicio pedido por software.");
+      break;
+    default:
+      Serial.println("desconocido.");
+      break;
+  }
 }
 
 // ============================================================
@@ -505,66 +722,213 @@ void apagarCalentador() {
 }
 
 // ============================================================
-//   SONIDO + LUCES
+//   SONIDO — captura, FFT y análisis de las tres bandas
 // ============================================================
+//
+// Todo este bloque corre en el NÚCLEO 1 (dentro del loop), que es el único dueño
+// del ADC. Ninguna función de acá puede llamarse desde la tarea de Telegram: dos
+// núcleos usando el mismo ADC dan lecturas corrompidas.
 
-// Mide el sonido en una ventana de ~35 ms: pico a pico (volumen real), base
-// adaptativa del ambiente y si hay sonido sostenido. Sin FFT: con la señal
-// débil de este micrófono, el volumen es la única medida confiable.
-void medirSonido() {
-  int minimo = 4095;
-  int maximo = 0;
-  int flancos = 0;
-  bool estadoDO = digitalRead(MIC_DO_PIN);
+// Una vuelta completa del análisis: capturar, transformar, repartir en bandas,
+// normalizar y buscar el golpe.
+void analizarSonido() {
+  capturarMuestras();
 
-  for (int i = 0; i < MUESTRAS_SONIDO; i++) {
+  // ¿Hay música? Se decide con el pico a pico crudo, que es la medida calibrada
+  // con 116 mediciones reales del taller. La memoria de 800 ms evita que la tira
+  // se apague en el silencio que hay entre dos golpes.
+  if (ultimoPicoAPico >= SONIDO_MINIMO) ultimoMomentoConSonido = millis();
+  hayMusica = (millis() - ultimoMomentoConSonido) < MEMORIA_MUSICA_MS;
+
+  calcularEspectro();
+
+  graves.crudo = energiaDeBanda(BANDA_GRAVES_DESDE, BANDA_GRAVES_HASTA);
+  medios.crudo = energiaDeBanda(BANDA_MEDIOS_DESDE, BANDA_MEDIOS_HASTA);
+  agudos.crudo = energiaDeBanda(BANDA_AGUDOS_DESDE, BANDA_AGUDOS_HASTA);
+
+  normalizarBanda(graves);
+  normalizarBanda(medios);
+  normalizarBanda(agudos);
+
+  volumenGeneral = (graves.nivel + medios.nivel + agudos.nivel) / 3.0f;
+  frecuenciaDominanteHz = calcularFrecuenciaDominante();
+
+  detectarBeat();
+  emitirTrazaSonido();
+}
+
+// Llena vReal con las muestras del micrófono y, de paso, saca las medidas
+// crudas (mínimo, máximo, pico a pico y punto de polarización).
+//
+// Mide además cuánto tardó DE VERDAD: analogRead() no siempre tarda lo mismo, y
+// si el muestreo sale a 9,2 kHz en vez de 10 todas las bandas quedan corridas un
+// 8 % sin que nadie se entere. Los cortes se calculan con la frecuencia real.
+void capturarMuestras() {
+  int  minimo = 4095;
+  int  maximo = 0;
+  long suma   = 0;
+
+  unsigned long inicio = micros();
+
+  for (int i = 0; i < MUESTRAS_FFT; i++) {
     unsigned long t = micros();
 
     int lectura = analogRead(MIC_PIN);
+    vReal[i] = (float)lectura;
+    vImag[i] = 0.0f;
+
     if (lectura < minimo) minimo = lectura;
     if (lectura > maximo) maximo = lectura;
-
-    // Canal DO: contar cambios de estado (golpes que superan el umbral del
-    // potenciómetro del módulo 2). Se cuentan flancos y no niveles para que
-    // funcione igual con módulos de polaridad invertida.
-    bool d = digitalRead(MIC_DO_PIN);
-    if (d != estadoDO) {
-      flancos++;
-      estadoDO = d;
-    }
+    suma += lectura;
 
     while (micros() - t < PERIODO_MUESTREO_US) {
-      // espera para mantener constante la frecuencia de muestreo
+      // espera activa para mantener constante la frecuencia de muestreo
     }
   }
 
-  // Un pin flotante (módulo 2 desconectado) genera decenas de flancos por
-  // ventana: en ese caso la lectura del DO se descarta.
-  ultimosFlancosDO = flancos;
-  golpeDO = (flancos > 0) && (flancos <= FLANCOS_DO_MAXIMO);
+  unsigned long duracion = micros() - inicio;
+  if (duracion > 0) {
+    frecuenciaRealHz = (MUESTRAS_FFT * 1000000.0f) / (float)duracion;
+  }
 
+  ultimoMinimo    = minimo;
+  ultimoMaximo    = maximo;
   ultimoPicoAPico = maximo - minimo;
+  ultimoDC        = (int)(suma / MUESTRAS_FFT);
+}
 
-  // La base aprende el nivel ambiente: baja rápido y sube lento, así un golpe
-  // puntual no la "infla" pero el sistema se acomoda al volumen general.
-  float alfa = (ultimoPicoAPico > p2pBase) ? ALFA_BASE_SUBE : ALFA_BASE_BAJA;
-  p2pBase += alfa * (ultimoPicoAPico - p2pBase);
-  p2pBase = constrain(p2pBase, 12.0f, 150.0f);
+// Convierte las muestras en un espectro: al salir, vReal[i] es la magnitud de la
+// frecuencia i * frecuenciaReal / MUESTRAS_FFT.
+void calcularEspectro() {
+  // 1) Quitar el punto de polarización del micrófono (~1,6 V). Sin esto, ese
+  //    offset aparece como un pico gigante en la primera frecuencia y contamina
+  //    los graves. Era uno de los errores de la FFT vieja.
+  fft.dcRemoval();
 
-  // ¿Golpe en el canal analógico? Se decide acá —y no en las luces— para que la
-  // traza, el comando /audio y el efecto miren exactamente el mismo dato.
-  umbralGolpe = max((int)(p2pBase * FACTOR_GOLPE), GOLPE_MINIMO);
-  golpeAO = (ultimoPicoAPico >= umbralGolpe);
+  // 2) Ventana de Hann: sin ella, los bordes abruptos de cada bloque de muestras
+  //    generan frecuencias falsas repartidas por todo el espectro.
+  fft.windowing(FFTWindow::Hann, FFTDirection::Forward);
 
-  // ¿Hay música? El volumen sobresale del ambiente aprendido, con memoria de
-  // 800 ms para que la detección no parpadee entre beats.
-  bool haySonidoAhora = (ultimoPicoAPico >= SONIDO_MINIMO) &&
-                        (ultimoPicoAPico >= p2pBase * 1.15f);
-  if (usaDO() && golpeDO) haySonidoAhora = true;
-  if (haySonidoAhora) ultimoMomentoConSonido = millis();
-  hayMusica = (millis() - ultimoMomentoConSonido) < 800;
+  // 3) La transformada, y de números complejos a magnitudes.
+  fft.compute(FFTDirection::Forward);
+  fft.complexToMagnitude();
+}
 
-  emitirTrazaSonido();
+// Energía media de una banda de frecuencias, comprimida con raíz cuadrada (lo
+// mismo que hace WLED): el rango dinámico de una FFT es enorme y sin comprimir
+// sólo se vería el pico más fuerte.
+float energiaDeBanda(float desdeHz, float hastaHz) {
+  int primerBin = (int)(desdeHz * MUESTRAS_FFT / frecuenciaRealHz);
+  int ultimoBin = (int)(hastaHz * MUESTRAS_FFT / frecuenciaRealHz);
+
+  // El bin 0 es lo que quedó del componente continuo: nunca se usa.
+  if (primerBin < 1) primerBin = 1;
+  if (ultimoBin > (MUESTRAS_FFT / 2) - 1) ultimoBin = (MUESTRAS_FFT / 2) - 1;
+  if (ultimoBin < primerBin) return 0.0f;
+
+  float suma = 0.0f;
+  for (int i = primerBin; i <= ultimoBin; i++) suma += vReal[i];
+
+  // Promedio por bin, no suma: si no, la banda de agudos (77 bins) le ganaría
+  // siempre a la de graves (5 bins) por ser más ancha, no por sonar más fuerte.
+  return sqrtf(suma / (float)(ultimoBin - primerBin + 1));
+}
+
+// Control automático de ganancia, uno por banda.
+//
+// Sin esto el sistema anda con un volumen y con otro no. Y hay un problema
+// extra: en música real los graves son 10 o 20 veces más fuertes que los agudos,
+// así que con una escala común la banda de agudos quedaría siempre apagada. Cada
+// banda se mide contra SU PROPIO máximo reciente y termina yendo de 0 a 1.
+void normalizarBanda(Banda &banda) {
+  if (banda.crudo > banda.maximoAgc) {
+    banda.maximoAgc = banda.crudo;          // sube al instante
+  } else {
+    banda.maximoAgc *= AGC_DECAIMIENTO;     // baja de a poco
+  }
+
+  // El piso es imprescindible: sin él, en silencio el AGC amplifica el ruido de
+  // fondo hasta el tope y la tira baila sola con el zumbido del ambiente.
+  if (banda.maximoAgc < AGC_PISO) banda.maximoAgc = AGC_PISO;
+
+  float objetivo = constrain(banda.crudo / banda.maximoAgc, 0.0f, 1.0f);
+
+  // Ataque instantáneo, caída suave: el golpe se ve YA, y se apaga con
+  // elegancia. Sin esto, a 35 cuadros por segundo la tira parpadea feo.
+  if (objetivo > banda.nivel) {
+    banda.nivel = objetivo;
+  } else {
+    banda.nivel += (objetivo - banda.nivel) * CAIDA_NIVEL;
+  }
+}
+
+// La frecuencia que más suena en este instante. Sirve para diagnóstico
+// (/espectro) y para saber si hay zumbido de red contaminando la medición.
+float calcularFrecuenciaDominante() {
+  int   mejorBin = 1;
+  float mejor    = 0.0f;
+
+  for (int i = 1; i < MUESTRAS_FFT / 2; i++) {
+    if (vReal[i] > mejor) {
+      mejor    = vReal[i];
+      mejorBin = i;
+    }
+  }
+  return mejorBin * frecuenciaRealHz / MUESTRAS_FFT;
+}
+
+// Detección de golpes por energía sonora.
+//
+// El beat NO sale de la FFT: sale de comparar la energía instantánea de los
+// GRAVES contra el promedio del último segundo. Se usa la energía CRUDA y no la
+// normalizada, porque el AGC justamente borra la información de "este golpe es
+// más fuerte que el promedio", que es la que hace falta acá.
+void detectarBeat() {
+  hayBeat = false;
+
+  int cantidad = historialLleno ? HISTORIAL_BEAT : posHistorial;
+
+  // Con menos de un cuarto de segundo de historia, el promedio no significa nada
+  // todavía: mejor no disparar que disparar cualquier cosa.
+  if (cantidad >= 8) {
+    float suma = 0.0f;
+    for (int i = 0; i < cantidad; i++) suma += historialGraves[i];
+    promedioGraves = suma / cantidad;
+
+    float sumaCuadrados = 0.0f;
+    for (int i = 0; i < cantidad; i++) {
+      float diferencia = historialGraves[i] - promedioGraves;
+      sumaCuadrados += diferencia * diferencia;
+    }
+    float desvio = sqrtf(sumaCuadrados / cantidad);
+
+    // El umbral se ajusta solo: si los golpes están muy marcados (mucha
+    // dispersión) se puede ser menos exigente; si la señal es plana hay que
+    // exigir más para no disparar con ruido. Se usa el desvío dividido el
+    // promedio porque es adimensional y vale en cualquier escala.
+    float dispersion = (promedioGraves > 0.01f) ? (desvio / promedioGraves) : 0.0f;
+    float factor = FACTOR_BASE - FACTOR_RANGO * fminf(1.0f, dispersion);
+    if (factor < FACTOR_MINIMO) factor = FACTOR_MINIMO;
+
+    umbralBeat = promedioGraves * factor;
+
+    unsigned long ahora = millis();
+    if (hayMusica && graves.crudo > umbralBeat &&
+        (ahora - ultimoBeat) >= REFRACTARIO_BEAT_MS) {
+      hayBeat        = true;
+      ultimoBeat     = ahora;
+      inicioDestello = ahora;
+    }
+  }
+
+  // Recién ahora entra al historial: si entrara antes, el golpe se estaría
+  // comparando contra un promedio que ya lo incluye y se taparía a sí mismo.
+  historialGraves[posHistorial] = graves.crudo;
+  posHistorial++;
+  if (posHistorial >= HISTORIAL_BEAT) {
+    posHistorial   = 0;
+    historialLleno = true;
+  }
 }
 
 // Vuelca una línea de traza por el Monitor Serie (sólo si /trace está activa).
@@ -572,106 +936,402 @@ void medirSonido() {
 // queda afuera del registro aunque dure menos que el intervalo.
 void emitirTrazaSonido() {
   if (!trazaSonidoActiva) return;
-
-  bool hayGolpe = golpeAO || golpeDO;
-  if (!hayGolpe && (millis() - ultimaTraza < INTERVALO_TRAZA_MS)) return;
+  if (!hayBeat && (millis() - ultimaTraza < INTERVALO_TRAZA_MS)) return;
   ultimaTraza = millis();
 
-  Serial.print("TRAZA t=");     Serial.print(millis());
-  Serial.print(" p2p=");        Serial.print(ultimoPicoAPico);
-  Serial.print(" base=");       Serial.print(p2pBase, 1);
-  Serial.print(" umbral=");     Serial.print(umbralGolpe);
-  Serial.print(" golpeAO=");    Serial.print(golpeAO ? 1 : 0);
-  Serial.print(" flancosDO=");  Serial.print(ultimosFlancosDO);
-  Serial.print(" golpeDO=");    Serial.print(golpeDO ? 1 : 0);
-  Serial.print(" musica=");     Serial.println(hayMusica ? 1 : 0);
+  Serial.print("TRAZA t=");    Serial.print(millis());
+  Serial.print(" p2p=");       Serial.print(ultimoPicoAPico);
+  Serial.print(" graves=");    Serial.print(graves.crudo, 1);
+  Serial.print(" medios=");    Serial.print(medios.crudo, 1);
+  Serial.print(" agudos=");    Serial.print(agudos.crudo, 1);
+  Serial.print(" promGraves="); Serial.print(promedioGraves, 1);
+  Serial.print(" umbral=");    Serial.print(umbralBeat, 1);
+  Serial.print(" beat=");      Serial.print(hayBeat ? 1 : 0);
+  Serial.print(" musica=");    Serial.print(hayMusica ? 1 : 0);
+  Serial.print(" domHz=");     Serial.print(frecuenciaDominanteHz, 0);
+  Serial.print(" fs=");        Serial.println(frecuenciaRealHz, 0);
 }
 
-// La velocidad se guarda en PWM (0-255) porque es lo que entiende el L298N, pero
-// se muestra y se pide en porcentaje, que es lo que entiende cualquiera.
-int velocidadPorcentaje() {
-  return (velocidadCobertor * 100) / 255;
-}
+// ============================================================
+//   LUCES — efectos sobre la tira WS2812
+// ============================================================
+//
+// Los efectos NO hablan con la tira: pintan en `cuadro[]` los colores ideales,
+// sin preocuparse por el consumo ni por el brillo. volcarCuadro() es el único
+// que manda datos, y es el que aplica el brillo, el límite de corriente y la
+// corrección de gamma. Un solo lugar decide, y es auditable de un vistazo.
 
-// ¿La fuente elegida incluye a cada canal?
-bool usaAO() { return fuenteGolpe == FUENTE_MIXTA || fuenteGolpe == FUENTE_AO; }
-bool usaDO() { return fuenteGolpe == FUENTE_MIXTA || fuenteGolpe == FUENTE_DO; }
-
-String fuenteGolpeTexto() {
-  switch (fuenteGolpe) {
-    case FUENTE_MIXTA: return "MIXTA (ambos microfonos)";
-    case FUENTE_AO:    return "AO (microfono analogico)";
-    case FUENTE_DO:    return "DO (detector por hardware)";
-    default:           return "?";
-  }
-}
-
-// Aplica el modo de luces elegido (AUTO / ON / OFF).
-void actualizarLucesSegunModo() {
-  if (modoLuces == LUCES_OFF) {
-    apagarTodasLasLuces();
-    return;
-  }
-  if (modoLuces == LUCES_ON) {
-    prenderTodasLasLuces();
-    return;
-  }
-  actualizarLucesSonido();   // LUCES_AUTO
-}
-
-// Modo AUTO: sin música todas prendidas; con música una "sombra" recorre los
-// colores; y cada GOLPE del ritmo las apaga todas un instante (strobe).
-// Siempre prendido o apagado pleno, nunca a media luz.
-void actualizarLucesSonido() {
-  unsigned long ahora = millis();
-
-  // ¿Golpe? Según la fuente elegida: el canal AO (volumen supera a la base con
-  // margen), el canal DO (el módulo 2 lo detectó por hardware), o cualquiera.
-  // Ambos los calculó medirSonido() sobre la ventana recién medida.
-  bool superaUmbral = (usaAO() && golpeAO) || (usaDO() && golpeDO);
-  if (superaUmbral && (ahora - inicioApagon) >= (DURACION_APAGON_MS + REFRACTARIO_MS)) {
-    inicioApagon = ahora;   // Arranca un apagón nuevo
-  }
-
-  // Las luces quedan apagadas mientras dura el apagón del último golpe.
-  bool apagadas = (ahora - inicioApagon) < DURACION_APAGON_MS;
-  ultimoBrillo = apagadas ? 0 : 255;
-
-  if (apagadas) {
-    apagarTodasLasLuces();
+void actualizarLuces() {
+  // La prueba de /luces_test manda sobre todo lo demás mientras dura.
+  if (pruebaTiraActiva) {
+    dibujarPruebaTira();
+    volcarCuadro();
     return;
   }
 
-  if (hayMusica) {
-    // Sombra rotante: todos los colores prendidos menos uno, que va girando.
-    static int posicion = 0;
-    static unsigned long ultimoPaso = 0;
-    if (ahora - ultimoPaso > 100) {
-      ultimoPaso = ahora;
-      posicion = (posicion + 1) % 4;
+  // Copia local: el modo puede cambiar desde el otro núcleo en cualquier momento,
+  // y toda esta función tiene que trabajar con un único valor coherente.
+  ModoLuces modo = modoLuces;
+  static ModoLuces modoPrevio = LUCES_ON;   // distinto de OFF: fuerza el 1er volcado
+
+  if (modo == LUCES_OFF) {
+    // Apagadas es el estado por defecto: se manda el cuadro negro una sola vez y
+    // después la tira queda quieta, sin tráfico de datos innecesario.
+    if (modoPrevio != LUCES_OFF) {
+      limpiarCuadro();
+      volcarCuadro();
     }
-    int colores[4] = {LED_VERDE, LED_ROJO, LED_AZUL, LED_BLANCO};
-    for (int i = 0; i < 4; i++) {
-      digitalWrite(colores[i], (i == posicion) ? LOW : HIGH);
-    }
+    modoPrevio = modo;
+    return;
+  }
+  modoPrevio = modo;
+
+  if (modo == LUCES_ON) {
+    // Blanco cálido: más agradable que el blanco puro y consume bastante menos,
+    // porque el canal azul va a menos de la mitad.
+    for (int i = 0; i < numLeds; i++) pintarPixel(i, 255, 190, 120);
+    volcarCuadro();
+    return;
+  }
+
+  // --- Modo AUTO ---
+  if (!hayMusica) {
+    efectoRespiracion();
   } else {
-    // Silencio: todas prendidas fijas, esperando que arranque la música.
-    prenderTodasLasLuces();
+    switch (efectoActual) {
+      case EFECTO_MEZCLA:   efectoMezcla();   break;
+      case EFECTO_COMETA:   efectoCometa();   break;   // no limpia: deja estela
+      case EFECTO_ARCOIRIS: efectoArcoiris(); break;
+      case EFECTO_ESPECTRO:
+      default:              efectoEspectro(); break;
+    }
+    aplicarDestello();
+  }
+
+  volcarCuadro();
+}
+
+// --- Efecto 1: ESPECTRO ---
+// La tira dividida en tres zonas; cada una es la barra de nivel de su banda.
+// Es el analizador de espectro clásico: se ve exactamente qué hace la música.
+void efectoEspectro() {
+  limpiarCuadro();
+
+  int porZona = numLeds / 3;
+  if (porZona < 1) porZona = 1;
+
+  dibujarBarra(0,             porZona,                 graves.nivel, 255,   0,   0);
+  dibujarBarra(porZona,       porZona,                 medios.nivel,   0, 255,   0);
+  dibujarBarra(porZona * 2,   numLeds - porZona * 2,   agudos.nivel,   0,  60, 255);
+}
+
+// --- Efecto 2: MEZCLA ---
+// Toda la tira toma un solo color, mezclado con las tres bandas: rojo = graves,
+// verde = medios, azul = agudos. Una canción con mucho bajo se ve roja; un
+// pasaje de platos, celeste. La tira "respira" el color de la música.
+void efectoMezcla() {
+  uint8_t r = (uint8_t)(graves.nivel * 255.0f);
+  uint8_t g = (uint8_t)(medios.nivel * 255.0f);
+  uint8_t b = (uint8_t)(agudos.nivel * 255.0f);
+
+  for (int i = 0; i < numLeds; i++) pintarPixel(i, r, g, b);
+}
+
+// --- Efecto 3: COMETA ---
+// Un cometa recorre la tira dejando estela. La velocidad la fija el volumen y el
+// color, la banda que domina. En cada golpe rebota y cambia de tono.
+void efectoCometa() {
+  static float    posicion   = 0.0f;
+  static int      direccion  = 1;
+  static uint16_t tono       = 0;
+
+  // No se limpia el cuadro: lo que quedó del cuadro anterior se atenúa, y eso
+  // es exactamente la estela.
+  atenuarCuadro(0.70f);
+
+  posicion += (0.15f + volumenGeneral * 1.10f) * direccion;
+
+  if (posicion >= numLeds - 1) { posicion = numLeds - 1; direccion = -1; }
+  if (posicion <= 0)           { posicion = 0;           direccion =  1; }
+
+  if (hayBeat) {
+    direccion = -direccion;
+    tono += 9000;      // salto de color en cada golpe
+  }
+
+  // El tono sigue a la banda dominante: graves al rojo, medios al verde,
+  // agudos al celeste.
+  uint16_t tonoBanda;
+  if (graves.nivel >= medios.nivel && graves.nivel >= agudos.nivel)      tonoBanda = 0;
+  else if (medios.nivel >= agudos.nivel)                                 tonoBanda = 21845;
+  else                                                                   tonoBanda = 38000;
+
+  int cabeza = (int)posicion;
+  pintarHSV(cabeza, tono + tonoBanda, 230, 255);
+}
+
+// --- Efecto 4: ARCOÍRIS ---
+// Degradado completo que gira sobre la tira. La velocidad sigue al volumen y
+// cada golpe le pega un salto de fase más un pico de brillo.
+void efectoArcoiris() {
+  static uint16_t fase = 0;
+
+  fase += (uint16_t)(150 + volumenGeneral * 1400.0f);
+  if (hayBeat) fase += 7000;
+
+  uint8_t valor = (uint8_t)(70.0f + volumenGeneral * 185.0f);
+
+  for (int i = 0; i < numLeds; i++) {
+    uint16_t tono = fase + (uint16_t)((uint32_t)i * 65536UL / (uint32_t)numLeds);
+    pintarHSV(i, tono, 255, valor);
   }
 }
 
-void prenderTodasLasLuces() {
-  digitalWrite(LED_VERDE,  HIGH);
-  digitalWrite(LED_ROJO,   HIGH);
-  digitalWrite(LED_AZUL,   HIGH);
-  digitalWrite(LED_BLANCO, HIGH);
+// --- Sin música: respiración ---
+// La tira va a pasar la mayor parte del tiempo así, con lo cual tiene que verse
+// linda también en silencio. Un ciclo lento de brillo con el tono derivando.
+void efectoRespiracion() {
+  static uint16_t tono = 0;
+  tono += 25;   // deriva lenta por la rueda de color
+
+  // Ciclo de 5 segundos, suave en los dos extremos (por eso el coseno y no una
+  // rampa: una rampa se ve como un parpadeo con un corte brusco).
+  float fase   = (millis() % 5000) / 5000.0f;
+  float brillo = 0.18f + 0.32f * (0.5f - 0.5f * cosf(fase * TWO_PI));
+
+  for (int i = 0; i < numLeds; i++) {
+    pintarHSV(i, tono + (uint16_t)(i * 500), 215, (uint8_t)(brillo * 255.0f));
+  }
 }
 
-void apagarTodasLasLuces() {
-  digitalWrite(LED_VERDE,  LOW);
-  digitalWrite(LED_ROJO,   LOW);
-  digitalWrite(LED_AZUL,   LOW);
-  digitalWrite(LED_BLANCO, LOW);
+// --- Destello del golpe ---
+// Una onda blanca que se abre desde el centro hacia los dos extremos y se apaga.
+// Es lo que le da el "latido" de discoteca. Se suma encima del efecto que esté
+// corriendo, así todos los efectos laten igual.
+void aplicarDestello() {
+  unsigned long transcurrido = millis() - inicioDestello;
+  if (transcurrido >= DURACION_DESTELLO_MS) return;
+
+  float avance     = (float)transcurrido / (float)DURACION_DESTELLO_MS;  // 0 -> 1
+  float intensidad = 1.0f - avance;                                      // se apaga
+  float centro     = (numLeds - 1) / 2.0f;
+  float radio      = avance * (centro + 1.5f);                           // se abre
+
+  for (int i = 0; i < numLeds; i++) {
+    // Cuánto le toca a este píxel: máximo justo sobre el frente de la onda.
+    float distanciaAlFrente = fabsf(fabsf(i - centro) - radio);
+    float cercania = 1.0f - distanciaAlFrente;
+    if (cercania <= 0.0f) continue;
+
+    aclararPixel(i, intensidad * cercania);
+  }
+}
+
+// --- Prueba de /luces_test ---
+// Rojo, verde, azul y blanco, 1,2 s cada uno. Sirve para dos cosas: confirmar
+// cuántos píxeles responden de verdad, y verificar el orden de colores (si
+// anuncia ROJO y se ve VERDE, el chip es RGB y se arregla con /orden).
+void dibujarPruebaTira() {
+  unsigned long transcurrido = millis() - inicioPruebaTira;
+  int paso = transcurrido / PASO_PRUEBA_MS;
+
+  if (paso > 3) {
+    pruebaTiraActiva = false;
+    limpiarCuadro();
+    return;
+  }
+
+  uint8_t r = 0, g = 0, b = 0;
+  switch (paso) {
+    case 0:  r = 255;                   break;
+    case 1:            g = 255;         break;
+    case 2:                     b = 255; break;
+    default: r = 255;  g = 255; b = 255; break;
+  }
+
+  for (int i = 0; i < numLeds; i++) pintarPixel(i, r, g, b);
+}
+
+// ============================================================
+//   LUCES — dibujo en el cuadro y volcado a la tira
+// ============================================================
+
+void limpiarCuadro() {
+  memset(cuadro, 0, sizeof(cuadro));
+}
+
+void pintarPixel(int i, uint8_t r, uint8_t g, uint8_t b) {
+  if (i < 0 || i >= numLeds) return;
+  cuadro[i][0] = r;
+  cuadro[i][1] = g;
+  cuadro[i][2] = b;
+}
+
+// Pinta usando tono/saturación/valor, que es como se piensa el color cuando se
+// diseña un efecto: "el mismo color pero más oscuro" es bajar el valor, en vez
+// de tener que recalcular tres números.
+void pintarHSV(int i, uint16_t tono, uint8_t saturacion, uint8_t valor) {
+  uint32_t color = Adafruit_NeoPixel::ColorHSV(tono, saturacion, valor);
+  pintarPixel(i, (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
+}
+
+// Baja el brillo de todo el cuadro. Llamado en cada vuelta, es lo que genera la
+// estela del cometa: cada píxel se va apagando solo.
+void atenuarCuadro(float factor) {
+  for (int i = 0; i < numLeds; i++) {
+    cuadro[i][0] = (uint8_t)(cuadro[i][0] * factor);
+    cuadro[i][1] = (uint8_t)(cuadro[i][1] * factor);
+    cuadro[i][2] = (uint8_t)(cuadro[i][2] * factor);
+  }
+}
+
+// Lleva un píxel hacia el blanco, sin pisarlo del todo: el destello se suma al
+// color que el efecto ya había puesto, en vez de borrarlo.
+void aclararPixel(int i, float fuerza) {
+  if (i < 0 || i >= numLeds) return;
+  fuerza = constrain(fuerza, 0.0f, 1.0f);
+
+  for (int c = 0; c < 3; c++) {
+    float valor = cuadro[i][c] + (255.0f - cuadro[i][c]) * fuerza;
+    cuadro[i][c] = (uint8_t)constrain(valor, 0.0f, 255.0f);
+  }
+}
+
+// Dibuja una barra de nivel dentro de una zona de la tira.
+//
+// El último píxel se enciende a brillo parcial en vez de saltar de golpe: con
+// sólo 5 píxeles por banda, ese detalle es la diferencia entre una barra que se
+// mueve con la música y una que da saltos de a un escalón.
+void dibujarBarra(int inicio, int largo, float nivel, uint8_t r, uint8_t g, uint8_t b) {
+  if (largo <= 0) return;
+
+  float exacto  = constrain(nivel, 0.0f, 1.0f) * largo;
+  int   enteros = (int)exacto;
+  float resto   = exacto - enteros;
+
+  for (int i = 0; i < largo; i++) {
+    if (i < enteros) {
+      pintarPixel(inicio + i, r, g, b);
+    } else if (i == enteros) {
+      pintarPixel(inicio + i, (uint8_t)(r * resto), (uint8_t)(g * resto), (uint8_t)(b * resto));
+    }
+  }
+}
+
+// El único lugar del programa que le manda datos a la tira.
+//
+// Aplica, en este orden: el brillo elegido, la corrección de gamma y el límite
+// de corriente. El límite se calcula sobre el color FINAL —el que el LED va a
+// mostrar de verdad— porque la corrección de gamma cambia mucho el consumo: un
+// valor de 128 termina siendo 34 en el LED, o sea la cuarta parte de corriente.
+void volcarCuadro() {
+  float escalaBrillo = brilloPorcentaje / 100.0f;
+
+  // Primera pasada: cuánto consumiría este cuadro tal como está.
+  long sumaCanales = 0;
+  for (int i = 0; i < numLeds; i++) {
+    for (int c = 0; c < 3; c++) {
+      sumaCanales += Adafruit_NeoPixel::gamma8((uint8_t)(cuadro[i][c] * escalaBrillo));
+    }
+  }
+
+  float mAColor  = sumaCanales * MA_POR_CANAL;
+  float mAReposo = numLeds * MA_PIXEL_EN_REPOSO;
+
+  // Lo que queda del presupuesto después de pagar el consumo en reposo de los
+  // chips, que no se puede evitar por software.
+  float mADisponibles = corrienteMaximaMa - mAReposo;
+  if (mADisponibles < 0.0f) mADisponibles = 0.0f;
+
+  // Si se pasa, se atenúa todo el cuadro por igual. Como el escalado se hace
+  // sobre el valor final, la corriente baja en la misma proporción.
+  float limite = 1.0f;
+  if (mAColor > mADisponibles && mAColor > 0.01f) {
+    limite = mADisponibles / mAColor;
+  }
+
+  corrienteEstimadaMa = (int)(mAColor * limite + mAReposo);
+
+  // Segunda pasada: el color definitivo.
+  for (int i = 0; i < numLeds; i++) {
+    uint8_t r = (uint8_t)(Adafruit_NeoPixel::gamma8((uint8_t)(cuadro[i][0] * escalaBrillo)) * limite);
+    uint8_t g = (uint8_t)(Adafruit_NeoPixel::gamma8((uint8_t)(cuadro[i][1] * escalaBrillo)) * limite);
+    uint8_t b = (uint8_t)(Adafruit_NeoPixel::gamma8((uint8_t)(cuadro[i][2] * escalaBrillo)) * limite);
+    tira.setPixelColor(i, r, g, b);
+  }
+
+  tira.show();
+}
+
+// Aplica la cantidad de píxeles y el orden de colores. Reasigna memoria dentro
+// de la librería, así que SÓLO puede llamarse desde el núcleo 1 y nunca en el
+// medio de un envío (ver atenderPedidosPendientes).
+void aplicarConfiguracionTira() {
+  tira.updateLength(numLeds);
+  tira.updateType(tiraEsGRB ? (NEO_GRB + NEO_KHZ800) : (NEO_RGB + NEO_KHZ800));
+
+  // Si la tira creció, los píxeles nuevos mostrarían lo que hubiera quedado en
+  // el cuadro de una configuración anterior.
+  limpiarCuadro();
+
+  // El brillo de la librería queda al máximo a propósito: lo aplicamos nosotros
+  // en volcarCuadro(). setBrightness() reescala el buffer de forma destructiva y,
+  // llamado en cada cuadro, va perdiendo resolución hasta ensuciar los colores.
+  tira.setBrightness(255);
+
+  tira.clear();
+  tira.show();
+}
+
+// Trabajos que pidió Telegram pero que sólo el núcleo 1 puede hacer: tocar el
+// ADC o reasignar la memoria de la tira. Se resuelven al principio de la vuelta,
+// nunca en el medio de un cuadro.
+void atenderPedidosPendientes() {
+  if (tiraNecesitaReconfigurar) {
+    tiraNecesitaReconfigurar = false;
+    aplicarConfiguracionTira();
+  }
+
+  if (pedidoVolcarOnda) {
+    pedidoVolcarOnda = false;
+    volcarOndaCruda();
+  }
+}
+
+// Vuelca por el Monitor Serie la onda cruda del micrófono, en CSV, para poder
+// analizarla en la PC (por ejemplo, para verificar el contenido de frecuencias o
+// buscar el zumbido de la red).
+//
+// Captura primero y escribe después: el puerto serie es unas siete veces más
+// lento que el muestreo, así que imprimir dentro del bucle deformaría la onda
+// que se está tratando de medir.
+void volcarOndaCruda() {
+  unsigned long inicio = micros();
+
+  for (int i = 0; i < MUESTRAS_FFT; i++) {
+    unsigned long t = micros();
+    vReal[i] = (float)analogRead(MIC_PIN);
+    while (micros() - t < PERIODO_MUESTREO_US) {
+      // espera activa para mantener constante la frecuencia de muestreo
+    }
+  }
+
+  unsigned long duracion = micros() - inicio;
+  float hz = (duracion > 0) ? (MUESTRAS_FFT * 1000000.0f / (float)duracion) : 0.0f;
+
+  Serial.println();
+  Serial.println("=== ONDA CRUDA DEL MICROFONO ===");
+  Serial.print("muestras=");        Serial.println(MUESTRAS_FFT);
+  Serial.print("frecuencia_hz=");   Serial.println(hz, 1);
+  Serial.println("indice,valor");
+
+  for (int i = 0; i < MUESTRAS_FFT; i++) {
+    Serial.print(i);
+    Serial.print(",");
+    Serial.println((int)vReal[i]);
+  }
+
+  Serial.println("=== FIN DE LA ONDA ===");
 }
 
 // ============================================================
@@ -695,6 +1355,12 @@ void setupCobertor() {
 // Un fin de carrera está "tocado" cuando el pin queda en LOW.
 bool finDeCarreraTocado(int pin) {
   return digitalRead(pin) == LOW;
+}
+
+// La velocidad se guarda en PWM (0-255) porque es lo que entiende el L298N, pero
+// se muestra y se pide en porcentaje, que es lo que entiende cualquiera.
+int velocidadPorcentaje() {
+  return (velocidadCobertor * 100) / 255;
 }
 
 // --- Control de cada motor (el L298N usa IN para dirección y EN para velocidad) ---
@@ -963,19 +1629,116 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   }
 
   // --- Luces ---
+  //
+  // Los comandos SÓLO cambian el modo. Nunca tocan la tira directamente: esto
+  // corre en el núcleo 0 (Telegram) y la tira es del núcleo 1. Mandarle datos
+  // desde acá sería pisar un envío en curso, y encima desde el núcleo donde vive
+  // el WiFi, que es justo lo que produce los parpadeos. El loop dibuja el cambio
+  // en la vuelta siguiente, unos 28 ms después.
   else if (text == "/luces_auto" || text == "/auto") {
     modoLuces = LUCES_AUTO;
-    bot.sendMessage(chat_id, "Luces en AUTO: quedan prendidas y se apagan al ritmo de la música.", "");
+    bot.sendMessage(chat_id, "Luces en AUTO: " + nombreDelEfecto() +
+                             ".\nCambia el efecto con /efecto 1 a 4.", "");
   }
   else if (text == "/luces_on") {
     modoLuces = LUCES_ON;
-    prenderTodasLasLuces();
-    bot.sendMessage(chat_id, "Luces ON: todas prendidas fijas.", "");
+    bot.sendMessage(chat_id, "Luces ON: tira encendida fija (blanco cálido) al " +
+                             String(brilloPorcentaje) + "% de brillo.", "");
   }
   else if (text == "/luces_off") {
     modoLuces = LUCES_OFF;
-    apagarTodasLasLuces();
-    bot.sendMessage(chat_id, "Luces OFF: todas apagadas.", "");
+    bot.sendMessage(chat_id, "Luces OFF: tira apagada.", "");
+  }
+  else if (text == "/luces_test") {
+    inicioPruebaTira = millis();
+    pruebaTiraActiva = true;
+    bot.sendMessage(chat_id,
+      "PRUEBA DE LA TIRA (" + String(numLeds) + " pixeles)\n\n"
+      "Va a mostrar, 1,2 segundos cada uno:\n"
+      "1) ROJO   2) VERDE   3) AZUL   4) BLANCO\n\n"
+      "Mirá dos cosas:\n"
+      "- Que se enciendan TODOS los pixeles (si no, ajustá /leds N).\n"
+      "- Que los colores coincidan. Si anuncia ROJO y ves VERDE, tu tira usa "
+      "otro orden de colores: mandá /orden y repetí la prueba.", "");
+  }
+  else if (text == "/orden") {
+    tiraEsGRB = !tiraEsGRB;
+    preferencias.putBool("tiraGRB", tiraEsGRB);
+    tiraNecesitaReconfigurar = true;   // lo aplica el loop, no este núcleo
+    bot.sendMessage(chat_id, "Orden de colores: " + String(tiraEsGRB ? "GRB" : "RGB") +
+                             ". Guardado.\nProbá de nuevo con /luces_test.", "");
+  }
+  else if (text.startsWith("/efecto")) {
+    String arg = text.substring(7);
+    arg.trim();
+    int numero = arg.toInt();
+
+    if (arg.length() == 0) {
+      bot.sendMessage(chat_id, "Efecto actual: " + String(efectoActual) + " — " +
+                               nombreDelEfecto() + "\n\n" + listaDeEfectos(), "");
+    } else if (numero < EFECTO_MINIMO || numero > EFECTO_MAXIMO) {
+      bot.sendMessage(chat_id, "Efecto invalido.\n\n" + listaDeEfectos(), "");
+    } else {
+      efectoActual = numero;
+      preferencias.putUChar("efecto", (uint8_t)efectoActual);
+      bot.sendMessage(chat_id, "Efecto " + String(efectoActual) + ": " +
+                               nombreDelEfecto() + ". Guardado.", "");
+    }
+  }
+  else if (text.startsWith("/leds")) {
+    String arg = text.substring(5);
+    arg.trim();
+    int cantidad = arg.toInt();
+
+    if (arg.length() == 0) {
+      bot.sendMessage(chat_id, "La tira esta configurada con " + String(numLeds) +
+                               " pixeles.\nPara cambiarlo: /leds 15\n"
+                               "(una tira de 30 LED/m tiene 15 pixeles cada 50 cm)", "");
+    } else if (cantidad < 1 || cantidad > MAX_LEDS) {
+      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 1 y " +
+                               String(MAX_LEDS) + ".", "");
+    } else {
+      numLeds = cantidad;
+      preferencias.putUShort("numLeds", (uint16_t)numLeds);
+      tiraNecesitaReconfigurar = true;
+      bot.sendMessage(chat_id, "Tira configurada con " + String(numLeds) +
+                               " pixeles. Guardado.\nVerificalo con /luces_test.", "");
+    }
+  }
+  else if (text.startsWith("/brillo")) {
+    String arg = text.substring(7);
+    arg.trim();
+    int porcentaje = arg.toInt();
+
+    if (arg.length() == 0) {
+      bot.sendMessage(chat_id, "Brillo maximo: " + String(brilloPorcentaje) +
+                               "%.\nPara cambiarlo: /brillo 60", "");
+    } else if (porcentaje < 0 || porcentaje > 100) {
+      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 0 y 100.", "");
+    } else {
+      brilloPorcentaje = porcentaje;
+      preferencias.putUChar("brillo", (uint8_t)brilloPorcentaje);
+      bot.sendMessage(chat_id, "Brillo maximo: " + String(brilloPorcentaje) +
+                               "%. Guardado.\n"
+                               "Ojo: el limite de corriente puede bajarlo todavia mas "
+                               "(mira /status).", "");
+    }
+  }
+  else if (text.startsWith("/corriente")) {
+    String arg = text.substring(10);
+    arg.trim();
+    int miliamperes = arg.toInt();
+
+    if (arg.length() == 0) {
+      bot.sendMessage(chat_id, armarCorriente(), "");
+    } else if (miliamperes < 50 || miliamperes > 2000) {
+      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 50 y 2000 mA.", "");
+    } else {
+      corrienteMaximaMa = miliamperes;
+      preferencias.putUShort("corriente", (uint16_t)corrienteMaximaMa);
+      bot.sendMessage(chat_id, "Presupuesto de corriente: " + String(corrienteMaximaMa) +
+                               " mA. Guardado.\n" + consejoDeCorriente(), "");
+    }
   }
 
   // --- Calentador ---
@@ -1041,14 +1804,6 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   else if (text == "/temp") {
     bot.sendMessage(chat_id, armarTemp(), "");
   }
-  else if (text == "/sonido_mixto" || text == "/sonido_ao" || text == "/sonido_do") {
-    if (text == "/sonido_mixto")   fuenteGolpe = FUENTE_MIXTA;
-    else if (text == "/sonido_ao") fuenteGolpe = FUENTE_AO;
-    else                           fuenteGolpe = FUENTE_DO;
-    preferencias.putUChar("fuenteGolpe", (uint8_t)fuenteGolpe);
-    bot.sendMessage(chat_id, "Fuente de golpes: " + fuenteGolpeTexto() +
-                             ". Guardada: sobrevive reinicios.", "");
-  }
   else if (text.startsWith("/temperatura")) {
     String arg = text.substring(12);   // lo que viene después de "/temperatura"
     arg.trim();
@@ -1089,8 +1844,20 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   else if (text == "/audio") {
     bot.sendMessage(chat_id, armarAudio(), "");
   }
+  else if (text == "/espectro") {
+    bot.sendMessage(chat_id, armarEspectro(), "");
+  }
   else if (text == "/diag") {
     bot.sendMessage(chat_id, armarDiagnosticoMicrofono(), "");
+  }
+  else if (text == "/onda") {
+    // La captura la hace el loop: el ADC es del núcleo 1 y este código corre en
+    // el 0. Acá sólo se deja el pedido.
+    pedidoVolcarOnda = true;
+    bot.sendMessage(chat_id,
+      "Volcando 256 muestras crudas del microfono por el Monitor Serie (115200).\n"
+      "Copiá el bloque entre '=== ONDA CRUDA ===' y '=== FIN DE LA ONDA ===' "
+      "para analizarlo en la PC.", "");
   }
   else if (text == "/trace") {
     trazaSonidoActiva = !trazaSonidoActiva;
@@ -1119,9 +1886,12 @@ String armarAyuda(String from_name) {
   String s = "Hola, " + from_name + " 👋\n";
   s += "Control de la Pileta Inteligente.\n\n";
   s += "LUCES:\n";
-  s += "/luces_auto - se apagan al ritmo de la música\n";
-  s += "/luces_on - prender todas fijas\n";
-  s += "/luces_off - apagar todas\n\n";
+  s += "/luces_auto - bailan con la música\n";
+  s += "/luces_on - encendidas fijas\n";
+  s += "/luces_off - apagadas\n";
+  s += "/efecto 1 a 4 - qué efecto usar en AUTO\n";
+  s += "/brillo 70 - brillo máximo (%)\n";
+  s += "/luces_test - probar la tira color por color\n\n";
   s += "CALENTADOR:\n";
   s += "/calentador_auto - automático por temperatura\n";
   s += "/calentador_on - forzar encendido\n";
@@ -1136,11 +1906,59 @@ String armarAyuda(String from_name) {
   s += "INFORMACIÓN:\n";
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
-  s += "/audio - datos del sonido\n";
-  s += "/sonido_mixto, /sonido_ao, /sonido_do - fuente de golpes\n";
+  s += "/audio - volumen y bandas en vivo\n";
+  s += "/espectro - detalle del análisis de frecuencias\n\n";
+  s += "AJUSTES FINOS (taller):\n";
+  s += "/leds 15 - cuántos pixeles tiene la tira\n";
+  s += "/corriente 120 - presupuesto de corriente (mA)\n";
+  s += "/orden - invertir el orden de colores (GRB/RGB)\n";
   s += "/diag - diagnostico del microfono\n";
   s += "/trace - traza del sonido por Monitor Serie\n";
+  s += "/onda - volcar la onda cruda por Monitor Serie\n";
   s += "/ip - IP del ESP32";
+  return s;
+}
+
+String nombreDelEfecto() {
+  switch (efectoActual) {
+    case EFECTO_ESPECTRO: return "ESPECTRO (una barra por banda: graves, medios, agudos)";
+    case EFECTO_MEZCLA:   return "MEZCLA (el color sale de mezclar las tres bandas)";
+    case EFECTO_COMETA:   return "COMETA (recorre la tira y rebota en cada golpe)";
+    case EFECTO_ARCOIRIS: return "ARCOIRIS (degradado que gira con la música)";
+    default:              return "?";
+  }
+}
+
+String listaDeEfectos() {
+  String s = "Efectos disponibles:\n";
+  s += "/efecto 1 - ESPECTRO: la tira en 3 zonas, una barra por banda\n";
+  s += "             (graves rojo, medios verde, agudos azul)\n";
+  s += "/efecto 2 - MEZCLA: toda la tira de un color, mezclado con\n";
+  s += "             las 3 bandas. Mucho bajo = rojo, platos = celeste\n";
+  s += "/efecto 3 - COMETA: recorre la tira dejando estela y rebota\n";
+  s += "             en cada golpe\n";
+  s += "/efecto 4 - ARCOIRIS: degradado que gira más rápido cuanto\n";
+  s += "             más fuerte suena";
+  return s;
+}
+
+// Consejo según con qué esté alimentado el ESP32. El riel de 5V no está libre:
+// ya alimenta al LCD, al relé y al micrófono, además del propio ESP32.
+String consejoDeCorriente() {
+  String s = "Referencia:\n";
+  s += "- 120 mA si el ESP32 está enchufado al USB de la notebook\n";
+  s += "- 500 mA si está en un cargador de celular de 2A\n";
+  s += "Si el ESP32 se reinicia al encender las luces, bajá este número.";
+  return s;
+}
+
+String armarCorriente() {
+  String s = "PRESUPUESTO DE CORRIENTE\n\n";
+  s += "Límite configurado: " + String(corrienteMaximaMa) + " mA\n";
+  s += "Consumo del último cuadro: " + String(corrienteEstimadaMa) + " mA\n";
+  s += "Pixeles: " + String(numLeds) + "\n\n";
+  s += "Para cambiarlo: /corriente 120\n\n";
+  s += consejoDeCorriente();
   return s;
 }
 
@@ -1156,11 +1974,15 @@ String armarStatus() {
     s += "Temp: ERROR sensor\n";
   }
 
-  s += "Luces: " + modoLucesTexto() + "\n";
+  s += "Luces: " + modoLucesTexto();
+  if (modoLuces == LUCES_AUTO) s += " — efecto " + String(efectoActual);
+  s += "\n";
+  s += "Tira: " + String(numLeds) + " pixeles, brillo " + String(brilloPorcentaje) + "%\n";
+  s += "Consumo tira: " + String(corrienteEstimadaMa) + " de " +
+       String(corrienteMaximaMa) + " mA\n";
   s += "Sonido: ";
   s += (hayMusica ? "musica detectada" : "silencio");
   s += "\n";
-  s += "Fuente golpes: " + fuenteGolpeTexto() + "\n";
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
   s += "Velocidad motores: " + String(velocidadPorcentaje()) + "%\n";
   s += "WiFi: ";
@@ -1183,48 +2005,39 @@ String armarTemp() {
   return s;
 }
 
-// Diagnóstico del micrófono: lee la señal CRUDA del ADC durante ~50 ms y devuelve
-// el mínimo, el máximo y la diferencia (pico a pico). Sirve para saber si el sensor
-// está entregando señal útil, sin que ningún umbral enmascare el dato.
+// Diagnóstico del micrófono: los valores crudos del ADC de la última ventana.
+//
+// NO mide por su cuenta a propósito. Esto corre en el núcleo 0 (Telegram) y el
+// ADC pertenece al núcleo 1: dos núcleos usando el mismo ADC dan lecturas
+// corrompidas. Se reportan los números que el loop ya midió, que además son
+// exactamente los que está usando el sistema para decidir.
 String armarDiagnosticoMicrofono() {
-  const int MUESTRAS_DIAG = 500;
-
-  int minimo = 4095;
-  int maximo = 0;
-  long suma  = 0;
-
-  for (int i = 0; i < MUESTRAS_DIAG; i++) {
-    int lectura = analogRead(MIC_PIN);
-    if (lectura < minimo) minimo = lectura;
-    if (lectura > maximo) maximo = lectura;
-    suma += lectura;
-    delayMicroseconds(100);   // ~10 kHz de muestreo => ~50 ms en total
-  }
-
-  int picoAPico = maximo - minimo;
-  int promedio  = suma / MUESTRAS_DIAG;
-
-  // Estado del canal DO durante la misma medición
   String s = "DIAGNOSTICO DEL MICROFONO\n";
   s += "(valores crudos del ADC, 0-4095)\n\n";
-  s += "Minimo: " + String(minimo) + "\n";
-  s += "Maximo: " + String(maximo) + "\n";
-  s += "PICO A PICO: " + String(picoAPico) + "\n";
-  s += "Promedio (DC): " + String(promedio) + "\n";
-  s += "DO (2do mic) ahora: ";
-  s += (digitalRead(MIC_DO_PIN) == HIGH ? "HIGH" : "LOW");
-  s += " | flancos ultima ventana: " + String(ultimosFlancosDO) + "\n\n";
+  s += "Minimo: " + String(ultimoMinimo) + "\n";
+  s += "Maximo: " + String(ultimoMaximo) + "\n";
+  s += "PICO A PICO: " + String(ultimoPicoAPico) + "\n";
+  s += "Punto de reposo (DC): " + String(ultimoDC) + "\n";
+  s += "Muestreo real: " + String(frecuenciaRealHz, 0) + " Hz\n\n";
 
-  if (picoAPico < 20) {
-    s += "=> Senal MUY DEBIL o nula. El sensor casi no esta captando.";
-  } else if (picoAPico < 100) {
-    s += "=> Senal DEBIL. Sirve para ruidos fuertes, no para musica.";
-  } else if (picoAPico < 500) {
-    s += "=> Senal ACEPTABLE. Deberia alcanzar para las luces.";
+  if (ultimoPicoAPico < 20) {
+    s += "=> Senal MUY DEBIL o nula. El sensor casi no esta captando.\n";
+  } else if (ultimoPicoAPico < 100) {
+    s += "=> Senal DEBIL. Sirve para ruidos fuertes, no para musica.\n";
+  } else if (ultimoPicoAPico < 500) {
+    s += "=> Senal ACEPTABLE. Alcanza para las luces.\n";
   } else {
-    s += "=> Senal FUERTE. De sobra para las luces.";
+    s += "=> Senal FUERTE. De sobra.\n";
   }
 
+  if (ultimoMaximo > 4000) {
+    s += "\nOJO: el maximo esta pegado al techo del ADC. La senal se esta\n";
+    s += "recortando y el analisis de frecuencias se ensucia.\n";
+  }
+
+  s += "\nPara verificar si la tira ensucia la medicion: mandá /diag con las\n";
+  s += "luces apagadas y otra vez con /luces_on. Si el pico a pico en silencio\n";
+  s += "sube mucho, la tira esta contaminando la alimentacion del microfono.";
   return s;
 }
 
@@ -1233,17 +2046,57 @@ String armarAudio() {
   s += "Sonido: ";
   s += (hayMusica ? "musica detectada" : "silencio");
   s += "\n";
-  s += "VOLUMEN (pico a pico): " + String(ultimoPicoAPico) + "\n";
-  s += "Base ambiente (aprendida): " + String(p2pBase, 1) + "\n";
-  s += "Golpe a partir de: " + String(umbralGolpe) + "\n";
-  s += "Fuente: " + fuenteGolpeTexto() + "\n";
-  s += "DO (2do mic): " + String(ultimosFlancosDO) + " flancos";
-  if (ultimosFlancosDO > FLANCOS_DO_MAXIMO) s += " (ruido: pin sin conectar?)";
-  s += "\n";
-  s += "Luces ahora: ";
-  s += (ultimoBrillo > 0 ? "PRENDIDAS" : "APAGADAS");
-  s += "\n";
+  s += "VOLUMEN (pico a pico): " + String(ultimoPicoAPico) + "\n\n";
+  s += "BANDAS (0 a 100):\n";
+  s += "  Graves: " + barraDeTexto(graves.nivel) + " " + String((int)(graves.nivel * 100)) + "\n";
+  s += "  Medios: " + barraDeTexto(medios.nivel) + " " + String((int)(medios.nivel * 100)) + "\n";
+  s += "  Agudos: " + barraDeTexto(agudos.nivel) + " " + String((int)(agudos.nivel * 100)) + "\n\n";
+  s += "Frecuencia dominante: " + String(frecuenciaDominanteHz, 0) + " Hz\n";
   s += "Modo luces: " + modoLucesTexto();
+  if (modoLuces == LUCES_AUTO) s += " — " + nombreDelEfecto();
+  return s;
+}
+
+// Una barra hecha con caracteres, para ver el nivel de un vistazo en el chat.
+String barraDeTexto(float nivel) {
+  const int ANCHO = 10;
+  int llenos = (int)(constrain(nivel, 0.0f, 1.0f) * ANCHO + 0.5f);
+  String s = "";
+  for (int i = 0; i < ANCHO; i++) s += (i < llenos) ? "█" : "·";
+  return s;
+}
+
+// Detalle del análisis de frecuencias. Es la herramienta para calibrar el
+// sistema de luces en el taller: muestra los valores crudos (antes del control
+// automático de ganancia), la referencia con la que se normaliza cada banda y el
+// umbral con el que se están detectando los golpes.
+String armarEspectro() {
+  String s = "ANALISIS DE ESPECTRO\n";
+  s += "FFT de " + String(MUESTRAS_FFT) + " muestras a " +
+       String(frecuenciaRealHz, 0) + " Hz\n";
+  s += "Resolucion: " + String(frecuenciaRealHz / MUESTRAS_FFT, 1) + " Hz por banda\n\n";
+
+  s += "BANDA      CRUDO   TOPE   NIVEL\n";
+  s += "Graves  " + String(graves.crudo, 1) + "   " + String(graves.maximoAgc, 1) +
+       "   " + String((int)(graves.nivel * 100)) + "%\n";
+  s += "Medios  " + String(medios.crudo, 1) + "   " + String(medios.maximoAgc, 1) +
+       "   " + String((int)(medios.nivel * 100)) + "%\n";
+  s += "Agudos  " + String(agudos.crudo, 1) + "   " + String(agudos.maximoAgc, 1) +
+       "   " + String((int)(agudos.nivel * 100)) + "%\n\n";
+
+  s += "GOLPES (sobre los graves):\n";
+  s += "  Promedio del ultimo segundo: " + String(promedioGraves, 1) + "\n";
+  s += "  Dispara a partir de: " + String(umbralBeat, 1) + "\n\n";
+
+  s += "Frecuencia dominante: " + String(frecuenciaDominanteHz, 0) + " Hz\n";
+  if (frecuenciaDominanteHz > 40 && frecuenciaDominanteHz < 70) {
+    s += "  OJO: 50 Hz es el zumbido de la red electrica. Si aparece en\n";
+    s += "  silencio, el microfono esta captando ruido de la fuente.\n";
+  }
+
+  s += "\nEl 'TOPE' es la referencia del control automatico de ganancia: cada\n";
+  s += "banda se normaliza contra su propio maximo reciente, para que los\n";
+  s += "agudos (siempre mas debiles) se vean igual que los graves.";
   return s;
 }
 
