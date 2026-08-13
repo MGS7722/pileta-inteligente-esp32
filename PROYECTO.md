@@ -11,7 +11,8 @@ desde un bot de Telegram. Todo corre en un solo ESP32 con el programa
 - Sensor DS18B20 sumergible mide la temperatura del agua en tiempo real
 - Relé de 1 canal controla el cartucho calefactor de 12V
 - Lógica: enciende cuando la temperatura baja del umbral, apaga cuando llega al objetivo
-- Histéresis de 5°C para evitar ciclos continuos
+- Histéresis de 2°C para evitar ciclos continuos: prende cuando el agua baja 2°C del
+  objetivo y apaga al llegar
 - Arranca APAGADO; se activa desde Telegram (auto / forzar ON / forzar OFF)
 - Se apaga solo por seguridad si el sensor falla
 - LCD 16x02 muestra temperatura y estado del calentador en tiempo real

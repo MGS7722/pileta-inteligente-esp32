@@ -29,6 +29,8 @@ medidos.
   igual al golpe y al promedio, y descontarlo aumenta el contraste.
 - **La tira es de 21 píxeles** (70 cm), no 15: es la vuelta completa a la pileta. Divide exacto
   en tres zonas de 7 para el efecto ESPECTRO.
+- **Histéresis del calentador: 5 °C → 2 °C.** Con 5 y un objetivo de 28 °C, el agua oscilaba
+  entre 23 y 28 — una diferencia que se siente al meterse. Ahora el rango es 26-28.
 
 ### Verificado en hardware
 - **Los dos defectos, cerrados**: en silencio las bandas pasaron de 78/88/80 a **2/0/0**, y con

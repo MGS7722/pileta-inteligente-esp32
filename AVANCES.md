@@ -11,7 +11,8 @@
 - [x] Fuente de 12V y cartucho calefactor conectados por el relé (2026-08-06)
 - [x] Polaridad del relé corregida: el módulo es ACTIVO-ALTO (verificado en hardware)
 - [x] **Ciclo completo probado en modo AUTO**: calentó hasta 26 °C y cortó solo (2026-08-06)
-- [ ] Revisar la histéresis: 5 °C es mucha oscilación para una pileta (¿bajarla a 2 °C?)
+- [x] **Histéresis bajada de 5 °C a 2 °C** (2026-08-13, decisión de Mariano): con 5, un
+      objetivo de 28 °C dejaba el agua oscilando entre 23 y 28. Ahora el rango es 26-28
 
 ## Sistema 2 — Luces al ritmo de la música
 

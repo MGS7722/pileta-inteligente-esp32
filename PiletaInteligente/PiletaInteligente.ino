@@ -114,7 +114,17 @@
 // inicial de fábrica. `volatile` porque la escribe Telegram (núcleo 0) y la lee
 // el loop (núcleo 1).
 volatile float tempObjetivo = 23.0;
-const float HISTERESIS    = 5.0;    // Margen para no prender/apagar a cada rato
+// Cuánto puede bajar el agua por debajo del objetivo antes de volver a encender.
+// El calentador prende cuando la temperatura cae por debajo de
+// (objetivo - HISTERESIS) y apaga al llegar al objetivo; el margen existe para
+// que no haga tic-tac con cada décima de grado.
+//
+// Bajada de 5 a 2 grados el 2026-08-13, por decisión de Mariano: con 5 y un
+// objetivo de 28 °C el agua oscilaba entre 23 y 28, que para una pileta es una
+// diferencia que se siente al meterse. Con 2 el rango queda en 26-28. El costo
+// es que el relé conmuta más seguido, y para eso hay margen de sobra: la inercia
+// térmica del agua hace que cada ciclo dure largo igual.
+const float HISTERESIS    = 2.0;
 
 // El módulo relé de este proyecto es ACTIVO-ALTO: HIGH energiza la bobina y
 // cierra el contacto, LOW lo suelta. Verificado en hardware el 2026-08-06: con
