@@ -486,6 +486,25 @@ con el tono de 3 kHz, 124 con el de 1 kHz, 39-60 con el de 100 Hz). Con esa fuen
 **`/piso 10`**, que deja el silencio igual en cero (el ruido crudo es 7,5) y le devuelve señal
 a los graves. Con un parlante decente, 12 está bien.
 
+**Calibración final con música real** (*Queen — "Another One Bites the Dust"*, elegida porque su
+riff de bajo está en Mi (82 Hz) con armónicos fuertes en 165 y 247 Hz, que un parlante chico sí
+reproduce). Con `/piso 10`, cuatro lecturas seguidas de `/espectro`:
+
+| Momento | Graves ÚTIL | Medios ÚTIL | Agudos ÚTIL | Dominante |
+|---|---|---|---|---|
+| mezcla | 4,2 | 3,6 | 0,0 | 857 Hz |
+| hi-hats | 6,9 | 4,5 | 9,5 | 4362 Hz |
+| **riff de bajo solo** | **6,9** | **0,0** | **0,0** | **195 Hz** |
+| voz y palmas | 1,1 | 12,6 | 10,7 | 2454 Hz |
+
+Las tres bandas se mueven de forma **independiente y completa**: en el momento del riff las
+otras dos caen a cero absoluto, y en el de la voz pasa lo contrario. La dominante de 195 Hz cae
+en el bin 5, dentro de la banda de graves: captó el bajo con sus armónicos. La detección de
+golpes trabaja con promedio 2,7-5,5 y umbral 3,1-6,9, y los picos de graves lo cruzan.
+
+**`/piso 10` quedó guardado en el ESP32.** El valor de fábrica sigue en 12 a propósito: en un
+lugar desconocido conviene el conservador, y bajarlo cuesta un comando.
+
 **Pendiente de esta sesión**: nada del sistema de luces. Queda lo del cobertor (fines de
 carrera y mecanismo) y la decisión de la histéresis — todo en `docs/PENDIENTES.md`.
 

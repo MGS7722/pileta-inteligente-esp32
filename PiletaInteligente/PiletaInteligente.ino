@@ -233,10 +233,17 @@ const float AGC_DECAIMIENTO = 0.999f;   // el máximo baja ~8 s si no se renueva
 // un piso de 12 y un ruido de 9, la banda seguiría mostrando 75%. Hay que
 // RESTAR el ruido antes de normalizar, no sólo acotarlo.
 //
-// Medido ese mismo día: en silencio las tres bandas dan 7,9 - 9,4 de crudo; con
-// música fuerte, 18,5 - 24,3. Un piso de 12 deja el ruido en cero y la música
-// prácticamente intacta. Se ajusta desde Telegram con /piso, sin recompilar,
-// porque el ruido de fondo depende de dónde esté instalada la pileta.
+// Medido ese mismo día: en silencio las tres bandas dan 6,8 - 9,4 de crudo; con
+// música fuerte, 18,5 - 24,3.
+//
+// **12 es el valor de fábrica, deliberadamente conservador** —en un lugar
+// desconocido es preferible que la tira se quede quieta a que baile sola con el
+// ruido—, pero el valor bueno depende del lugar Y de la fuente de audio, y por
+// eso se ajusta desde Telegram con /piso, sin recompilar. En el taller quedó en
+// **10**: la música salía del parlante de un celular, que no emite graves, y con
+// 12 la banda de graves (crudo ~11,8) se apagaba entera. Con 10 el silencio
+// sigue dando cero —el ruido no pasa de 7,5— y el riff de bajo entra con
+// holgura (crudo 14 a 17).
 //
 // Lo escribe Telegram (núcleo 0) y lo lee el análisis (núcleo 1), igual que
 // numLeds: en el ESP32 escribir un entero alineado es atómico, así que nunca se
