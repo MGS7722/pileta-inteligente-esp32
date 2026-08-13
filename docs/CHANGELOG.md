@@ -8,6 +8,56 @@
 
 ---
 
+## v5.2 — 2026-08-13 · El cobertor, rehecho
+
+El mecanismo del cobertor cambió: ahora es un **lazo de hilo entre los dos ejes**, así que los
+dos motores empujan juntos hacia el mismo lado y el recorrido se mide **por tiempo**.
+
+### Agregado
+- **`/tiempo_abrir N` y `/tiempo_cerrar N`** (1 a 60 s, en NVS): cada movimiento lleva su propio
+  tiempo, porque cerrar suele costar más que abrir.
+- **`/sentido_a` y `/sentido_b`**: invierten el giro de un motor **sin desatornillar cables** del
+  L298N, guardado en NVS. "Que los dos giren para el mismo lado" es una condición física y
+  depende de cómo queden montados.
+- **`/motor_a N`**: la prueba de taller acepta cuántos segundos girar (2 por omisión). No se
+  guarda en NVS a propósito: es una prueba, no un ajuste.
+- Los mensajes de `/sentido_*`, `/motor_*` y `/status` dicen **hacia qué lado gira cada motor** y
+  avisan si los dos quedaron alineados o cruzados.
+- **Patada de arranque**: los motores parten al 100 % durante 300 ms y recién ahí bajan a la
+  velocidad de régimen. Un motor con reductora necesita mucho más par para empezar a moverse.
+- El Monitor Serie informa la **duración medida** de cada movimiento junto a la pedida, para
+  distinguir "lo cortó el programa" de "el motor se frenó solo".
+
+### Cambiado
+- **Los dos motores giran juntos**, en la misma dirección. Antes uno tiraba y el otro quedaba
+  suelto, que era lo correcto para el mecanismo anterior.
+- **El recorrido termina por tiempo, no por sensor.** Los fines de carrera siguen leyéndose e
+  informan la posición en `/status`, pero **ya no cortan el movimiento**.
+- **PWM de los motores: 1 kHz → 8 kHz.** El valor de fábrica del core cae justo donde el oído es
+  más sensible, y un motor que no llega a girar chilla a esa frecuencia.
+- **Al terminar, freno en seco** (*fast motor stop* del L298N) en vez de soltar el motor: antes
+  seguía girando por inercia con el carrete encima. Al encender siguen sueltos, para poder mover
+  el mecanismo a mano.
+- **Módulo de motores reescrito**: los dos motores pasaron a una estructura con sus pines
+  adentro, con **tres funciones compartidas** en lugar de dos juegos duplicados, y **un solo
+  arranque** y **un solo corte por tiempo** para los tres movimientos.
+
+### Arreglado
+- **El bot se quedaba mudo hasta dos minutos.** El saludo TLS traía un timeout de fábrica de
+  120 s (`NetworkClientSecure.cpp`), y la línea que supuestamente lo protegía —`setTimeout(2000)`—
+  no hacía nada: esa clase no redefine el método y terminaba en `Stream::setTimeout()`, que sólo
+  gobierna las lecturas. Ahora usa **`setHandshakeTimeout(5)`**, la API correcta, en segundos.
+- **El tiempo de la prueba de motor podía tomar el de la apertura**, porque había dos relojes y
+  `probarMotor()` no tocaba el que usaba el corte.
+
+### Verificado en hardware
+- Movimiento de 10 s → **10008 ms medidos**. Prueba de 2 s → **2019 ms medidos**.
+- Latido de Telegram: **máximo 4 s**, contra los **117 s** de antes del arreglo.
+- Los dos motores moviéndose juntos, con el hilo atado.
+- Aparte del firmware: el motor B tenía **una soldadura floja**, que imitaba estos síntomas.
+
+---
+
 ## v5.1 — 2026-08-13 · La tira en el taller
 
 Primera prueba en hardware de la tira WS2812 y recalibración del análisis de sonido con datos

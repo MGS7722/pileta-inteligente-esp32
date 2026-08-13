@@ -161,13 +161,29 @@ Fines de carrera (interruptores de tope) — usar las patas COM y NO
                  INTERNA del ESP32: no hace falta ninguna externa)
 ```
 
-- **Verificación sin mover motores:** mandá `/status` y mirá la línea "Cobertor". Apretando
-  cada fin de carrera con el dedo tiene que pasar de "parado (posición intermedia)" a
-  "cerrado" o "abierto". Si no cambia, el cable está en la pata NC en vez de la NO.
+> ⚠️ **Desde el 2026-08-13 los fines de carrera NO cortan el movimiento.** El mecanismo pasó a
+> ser un lazo de hilo sin topes físicos, así que el recorrido se mide por tiempo
+> (`/tiempo_abrir`, `/tiempo_cerrar`). Los dos sensores siguen leyéndose y **sólo informan la
+> posición** en `/status`.
 
-- **Motor A** = lado del rodillo donde se enrolla la lona. **Motor B** = lado que tira de los cables.
-- El código ya hace que **cuando uno tira, el otro queda suelto** (no se traban).
-- Si un motor gira al revés, se invierten sus dos cables (OUT) o se cambia HIGH/LOW en el código.
+- **Verificación sin mover motores:** mandá `/status` y mirá la línea "Fines de carrera", que
+  muestra **cada pin por separado**: `cerrado libre | abierto libre`. Apretando cada uno con el
+  dedo, el suyo tiene que pasar a `TOCADO`. Se informan sueltos y no resumidos en una palabra a
+  propósito: si un cable quedara en la pata **NC** en vez de la NO, el pin se lee TOCADO en
+  reposo, y resumido eso se disfraza de posición válida y la verificación da un falso OK.
+
+**Cómo trabajan los dos motores**
+
+- Cada motor mueve **su carrete**: el hilo se enrolla en uno mientras se desenrolla del otro.
+- **Los dos giran juntos, en la misma dirección.** Si uno empujara y el otro quedara suelto, el
+  lazo se destensaría de un lado y se trabaría del otro.
+- **"El mismo lado" es físico, no eléctrico**: según cómo queden montados los motores
+  (enfrentados o alineados), mover el hilo en la misma dirección puede exigir que uno gire
+  horario y el otro antihorario.
+- Si un motor gira para el lado equivocado, **no se tocan los cables**: se manda `/sentido_a` o
+  `/sentido_b` y queda guardado en NVS. `/status` informa hacia dónde gira cada uno.
+- Arrancan con una **patada al 100 % durante 300 ms** —un motor con reductora necesita mucho más
+  par para empezar a moverse que para seguir girando— y al terminar **frenan en seco**.
 
 ---
 

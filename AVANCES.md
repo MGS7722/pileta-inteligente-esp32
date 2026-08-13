@@ -38,8 +38,14 @@
 ## Sistema 3 — Cobertor automático retráctil
 
 - [x] Motores comprados: 2× Pololu micro metal 6V 500 RPM (eje 3mm) + 2 acoples 5mm
-- [x] Mecanismo definido: rodillo (motor A) + cables de tracción por guías (motor B)
-- [x] Programada la apertura/cierre: lógica "un motor tira / el otro suelto", PWM y corte por fin de carrera
+- [x] **Mecanismo redefinido (2026-08-13)**: lazo de hilo entre los dos ejes. Los DOS motores
+      giran juntos hacia el mismo lado y el recorrido se mide **por tiempo**, no por sensor
+- [x] **Tiempos por Telegram** (`/tiempo_abrir`, `/tiempo_cerrar`), uno para cada movimiento,
+      guardados en NVS
+- [x] **Sentido de cada motor invertible desde Telegram** (`/sentido_a`, `/sentido_b`): ya no
+      hace falta desatornillar cables del L298N para corregir un giro
+- [x] **PWM a 8 kHz + patada de arranque al 100 %**: sin eso el motor zumbaba y no arrancaba
+- [x] **Freno activo al terminar** (*fast motor stop* del L298N) en vez de dejarlo por inercia
 - [x] Integrado a Telegram: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar (+ aviso al terminar)
 - [x] Pines asignados y documentados en CONEXIONES.md
 - [x] Alimentación resuelta: fuente regulable del laboratorio a ~8V (sin LM2596 ni resistencias extra)
@@ -48,8 +54,14 @@
 - [x] Comandos `/motor_a` y `/motor_b` para probar un motor solo, sin fines de carrera
 - [x] **Los dos motores giran** — probado en hardware con el L298N y la fuente a 8V (2026-08-06)
 - [x] Velocidad ajustable en vivo desde Telegram con `/velocidad` (%, guardada en NVS)
-- [ ] Conectar los 2 fines de carrera y verificar que corten
-- [ ] Montar el mecanismo físico y calibrar el sentido de giro de cada motor
+- [x] **Los dos motores moviéndose JUNTOS, verificado en hardware** (2026-08-13): movimiento de
+      10 s medido en **10008 ms**, prueba de motor de 2 s medida en **2019 ms**
+- [x] **Soldadura del motor B reparada** (2026-08-13): iba y venía por un contacto flojo, no por
+      el firmware
+- [ ] Montar el mecanismo con la lona y anotar los valores definitivos: `/velocidad`,
+      `/tiempo_abrir` y `/tiempo_cerrar`
+- [ ] Conectar los 2 fines de carrera (ahora sólo informan la posición en `/status`; **no**
+      cortan el movimiento)
 
 ## Bot de Telegram
 
@@ -520,3 +532,146 @@ carrera y mecanismo) y la decisión de la histéresis — todo en `docs/PENDIENT
 - **Fable 5**: investigación del sensor, diagnóstico con mediciones, plan LEGO adaptativo,
   auditoría del diff, docs
 - **Sonnet 5** (subagente ejecutor): implementación del plan adaptativo (commit `b785ddc`)
+
+---
+
+### Sesión 2026-08-13 (parte 2) — El cobertor cambia de mecanismo, y cuatro fallas de raíz
+
+Sesión larga de taller, con el ESP32 conectado por USB y recargando firmware en vivo. Se
+rediseñó el cobertor y aparecieron cuatro problemas distintos, cada uno con su causa propia.
+Vale la pena leerlos por separado porque los síntomas se parecían entre sí y llevaron un rato
+largo de diagnóstico.
+
+**El cambio de fondo: el cobertor pasó a ser un lazo de hilo, movido por tiempo**
+
+El diseño anterior era "un motor tira y el otro queda suelto": el rodillo enrollaba la lona de
+un lado mientras el otro soltaba cable, y el recorrido terminaba al tocar un fin de carrera. En
+el taller Mariano ató un hilo entre los dos ejes, que es un mecanismo distinto: un lazo cerrado
+donde **los dos motores tienen que empujar juntos hacia el mismo lado**, y no hay topes físicos
+que marquen el final del recorrido.
+
+Decisiones tomadas (Mariano, en vivo):
+- Los dos motores giran **juntos**, misma dirección, misma duración.
+- El recorrido se corta **por tiempo**, no por sensor. Los fines de carrera siguen leyéndose e
+  informan la posición en `/status`, pero **ya no cortan el movimiento**.
+- **Abrir y cerrar llevan su propio tiempo** (`/tiempo_abrir`, `/tiempo_cerrar`), porque cerrar
+  suele costar más: la lona pesa y el hilo roza.
+- El sentido de cada motor se invierte **desde Telegram** (`/sentido_a`, `/sentido_b`), no
+  desatornillando cables. "Que los dos giren para el mismo lado" es una condición física: según
+  cómo queden montados, puede exigir sentidos eléctricos opuestos.
+
+**Falla 1 — El motor zumbaba y no arrancaba**
+
+Con `/cobertor_abrir` se movía un solo motor; el otro hacía ruido y quedaba quieto. Dos causas
+sumadas, las dos verificadas contra el código fuente del core ESP32 3.3.10:
+
+1. **El PWM salía a 1 kHz.** Es el valor de fábrica de `analogWrite` (`esp32-hal-ledc.c`:
+   `analog_frequency = 1000`), justo en la zona donde el oído es más sensible. Un motor que
+   recibe corriente pero no llega a vencer su rozamiento vibra a esa frecuencia: **el "ruido"
+   que se escuchaba era literalmente el PWM**. Subido a **8 kHz**, que además es cómodo para el
+   L298N, de transistores Darlington y lento para conmutar.
+2. **No había pulso de arranque.** Un motor con reductora necesita mucho más par para *empezar*
+   a moverse que para seguir girando: al 45 % arrancaba en vacío pero se frenaba con cualquier
+   carga. Se agregó una **patada de arranque al 100 % durante 300 ms**, y recién después baja a
+   la velocidad de régimen. La baja el loop, no un `delay()`, para no bloquear la tarea de
+   Telegram.
+
+**Falla 2 — "El movimiento se corta antes de tiempo" (no se cortaba)**
+
+Con `/tiempo_abrir 10` el cobertor parecía moverse dos segundos. Se instrumentó el Monitor
+Serie para informar la duración **medida** junto a la pedida, y el resultado fue terminante:
+
+```
+>>> Cobertor: ABIERTO — duro 10008 ms de los 10000 ms pedidos
+```
+
+Ocho milésimas de error. **El programa nunca tuvo el bug**: contaba los 10 segundos completos y
+el motor se frenaba solo al bajar de la patada al 45 %, porque el par no alcanzaba contra la
+carga del hilo. Con `/velocidad 100` el recorrido salió entero. La lección quedó en el código:
+esa línea del Serie se conservó justamente para distinguir "lo cortó el programa" de "el motor
+se paró solo".
+
+**Falla 3 — El bot de Telegram se quedaba mudo**
+
+El síntoma era "el bot está lento". El latido de la tarea mostró otra cosa: huecos de **60 y
+117 segundos** con el WiFi conectado y el resto del programa funcionando perfecto. La causa
+apareció en el core:
+
+```c
+// NetworkClientSecure.cpp
+sslclient->handshake_timeout = 120000;   // DOS MINUTOS
+```
+
+Cuando el saludo TLS con Telegram se traba, la tarea espera los dos minutos completos. Y la
+protección que el código creía tener **no existía**: `client.setTimeout(2000)` no hace nada para
+esto, porque `NetworkClientSecure` no redefine ese método y termina en `Stream::setTimeout()`,
+que sólo gobierna las lecturas. La API correcta es **`setHandshakeTimeout()`**, y su parámetro
+va **en segundos** (el core lo multiplica por 1000). Puesto en **5 segundos**.
+
+Medido después del cambio: **latido máximo de 4 segundos**, contra los 117 de antes.
+
+**Falla 4 — Una soldadura floja en el motor B**
+
+El motor B iba y venía: andaba, se trababa, dejaba de responder. Se descartó el software
+—el Monitor Serie mostraba las órdenes llegando y ejecutándose— y resultó ser **un problema de
+soldadura en el motor**. Vale anotarlo porque el síntoma imitaba a las fallas 1 y 2 y costó
+separarlo de ellas.
+
+**Reescritura del módulo de motores**
+
+Con tantos síntomas parecidos, el código de motores se rehízo de cero. El problema de fondo era
+**duplicación**: dos juegos de funciones casi idénticos (uno por motor) y tres arranques de
+movimiento separados que repetían las mismas líneas. Toda diferencia entre esas copias era un
+error esperando — de hecho, que `probarMotor()` no tocara `duracionMovimientoMs` permitía que
+una prueba de 2 segundos usara los 10 de una apertura.
+
+Ahora:
+- Los motores son una **estructura con sus pines adentro** (`motorA`, `motorB`).
+- **Tres funciones** son la única forma de tocar un motor, y las comparten los dos:
+  `motorMover()`, `motorFrenar()`, `motorSoltar()`.
+- **Un solo arranque** (`iniciarMovimiento()`) para abrir, cerrar y probar.
+- **Un solo corte por tiempo** en `actualizarCobertor()`: el estado decide *qué* hacer al
+  terminar, nunca *cuándo*.
+
+**Freno activo en vez de rueda libre**
+
+Al terminar un movimiento el código soltaba los motores (habilitación en cero), y el eje seguía
+girando por inercia con el carrete de hilo encima. Ahora frena en seco usando el propio L298N
+—ambas entradas en bajo con la habilitación **alta**, lo que la tabla del integrado llama *fast
+motor stop*—. Como beneficio extra, el cobertor queda quieto en lugar de poder correrse solo por
+el peso de la lona. Al encender, en cambio, los motores quedan sueltos, para poder mover el
+mecanismo a mano.
+
+**Comandos nuevos**
+
+| Comando | Qué hace |
+|---|---|
+| `/tiempo_abrir N` · `/tiempo_cerrar N` | Segundos de cada movimiento, 1 a 60, en NVS |
+| `/sentido_a` · `/sentido_b` | Invierte ese motor sin tocar cables, en NVS |
+| `/motor_a N` · `/motor_b N` | Prueba de un motor N segundos (2 por omisión, **no** se guarda) |
+
+Los mensajes de `/sentido_*`, `/motor_*` y `/status` informan **hacia qué lado gira cada motor**
+y avisan si los dos quedaron para el mismo lado o para lados contrarios. Es la referencia del
+driver, no el eje real: si en el eje se ve al revés se lee dado vuelta, porque lo que importa es
+que el hilo avance, no cómo se llame cada sentido.
+
+**Gate**: compilado y cargado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de
+flash y 16 % de RAM**, `Hash of data verified`. Los únicos warnings son los conocidos de
+LiquidCrystal I2C y OneWire.
+
+**Verificado en hardware**
+
+| Prueba | Resultado |
+|---|---|
+| Movimiento de 10 s | **10008 ms medidos** |
+| Prueba de motor de 2 s | **2019 ms medidos** |
+| Latido de Telegram tras el arreglo | **máximo 4 s** (antes 117 s) |
+| Los dos motores juntos | funcionan |
+
+**Pendiente de esta sesión**: anotar los valores definitivos de calibración (velocidad y los dos
+tiempos) una vez montado el mecanismo con la lona.
+
+#### Atribución por modelo (sesión 2026-08-13, parte 2)
+- **Opus 5**: rediseño del cobertor por tiempo, investigación del core ESP32 (PWM, handshake
+  TLS), diagnóstico con el Monitor Serie, reescritura del módulo de motores, carga del firmware
+  y documentación.

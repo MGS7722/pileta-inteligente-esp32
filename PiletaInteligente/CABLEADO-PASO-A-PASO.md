@@ -512,11 +512,20 @@ Por Telegram:
 
 | Comando | Qué hace |
 |---|---|
-| `/motor_a` | Mueve **sólo el motor A** (el del rodillo) durante 2 segundos y frena solo |
-| `/motor_b` | Mueve **sólo el motor B** (el que tira de los cables) durante 2 segundos y frena solo |
+| `/motor_a` | Mueve **sólo el motor A** durante 2 segundos y frena solo |
+| `/motor_b` | Mueve **sólo el motor B** durante 2 segundos y frena solo |
+| `/motor_a 5` | Lo mismo, pero eligiendo los segundos (de 1 a 60) |
 
 6. Mandá **`/motor_a`**. Tiene que girar **sólo** el motor A. Anotá para qué lado gira.
 7. Mandá **`/motor_b`**. Tiene que girar **sólo** el motor B. Anotá para qué lado gira.
+
+> ⚠️ **Hacé esto con el hilo DESATADO.** Estos dos comandos mueven un motor y dejan el otro
+> suelto; con el lazo puesto, el suelto frena por su propia reductora y traba la prueba. Peor:
+> mientras los sentidos no estén alineados, cada intento pone a los motores a tirar uno contra
+> el otro y el hilo se tensa hasta trabarse. Primero se alinean los sentidos, después se ata.
+>
+> Con el mecanismo ya armado, la prueba válida es `/tiempo_abrir 2` + `/cobertor_abrir`, que
+> mueve los dos juntos.
 
 **Qué mirar:**
 - **No gira ninguno** → revisá los jumpers de ENA/ENB (¿los sacaste?), el GND común (paso 31)
@@ -529,24 +538,37 @@ Por Telegram:
   falta más fuerza, así que puede que tengas que subirlo.
 - **Zumba pero no gira** → la velocidad quedó demasiado baja: por debajo del 20% el motor no
   vence su propio rozamiento. Subila con `/velocidad`.
-- **Gira para el lado equivocado** → invertí **los dos cables de ese motor** en el L298N
-  (OUT1↔OUT2 para el A, OUT3↔OUT4 para el B). No toques el código.
+- **Gira para el lado equivocado** → **`/sentido_a`** o **`/sentido_b`**, y volvé a probar.
+  Queda guardado en el ESP32. **No hay que tocar ningún cable ni recompilar.**
 
-**Cuál es el lado correcto:**
-- **Motor A** tiene que girar en el sentido que **enrolla la lona en el rodillo** (= abrir).
-- **Motor B** tiene que girar en el sentido que **tira de los cables** (= cerrar).
+**Cuál es el lado correcto:** los dos motores tienen que mover el hilo **en la misma
+dirección**. Ojo: eso es una condición *física*. Si los motores quedaron enfrentados, "el mismo
+lado" para el hilo significa que uno gira horario y el otro antihorario — por eso se calibra
+mirando el hilo, no el eje. `/status` te muestra los dos juntos:
+
+```
+Al ABRIR: motor A a la derecha (horario)
+          motor B a la derecha (horario)
+```
 
 ### 4. Recién ahora, el movimiento completo
-8. Con los motores todavía desacoplados, probá **`/cobertor_abrir`**. Tiene que arrancar el
-   motor A y quedarse hasta que aprietes el fin de carrera ABIERTO con el dedo (o hasta que
-   corte solo a los 30 segundos por seguridad).
-9. Apretá el fin de carrera **ABIERTO**: el motor tiene que frenar en el acto y te tiene que
-   llegar el aviso *"Cobertor ABIERTO ✅"* por Telegram.
-10. Lo mismo con **`/cobertor_cerrar`** y el fin de carrera **CERRADO**.
-11. Probá **`/cobertor_parar`** en medio de un movimiento: tiene que frenar al instante.
+8. **Atá el hilo** entre los dos ejes, ahora que los sentidos están alineados.
+9. Poné un tiempo corto: **`/tiempo_abrir 2`**, y mandá **`/cobertor_abrir`**. Tienen que
+   arrancar **los dos motores juntos** y frenar solos a los 2 segundos.
+10. Mirá hacia dónde se movió el hilo. Si va al revés de lo que querés que sea "abrir", mandá
+    **`/sentido_a` y `/sentido_b`** —los dos— para dar vuelta el conjunto entero.
+11. Subí de a poco `/tiempo_abrir` hasta que el recorrido quede completo, y hacé lo mismo con
+    **`/tiempo_cerrar`**. Cerrar suele necesitar un poco más: la lona pesa y el hilo roza.
+12. Probá **`/cobertor_parar`** en medio de un movimiento: tiene que frenar al instante.
 
-Si los 4 puntos anteriores dan bien, el sistema de motores está verificado y recién ahí
-conviene acoplar los motores al mecanismo.
+> 💡 **Si el motor zumba y no arranca, o arranca y se frena a mitad de camino**, es falta de
+> par: subí `/velocidad`. Con el hilo pelado hizo falta llegar a `/velocidad 100`. El Monitor
+> Serie te dice si el programa cortó o si el motor se frenó solo:
+> `>>> Cobertor: ABIERTO — duro 10008 ms de los 10000 ms pedidos`.
+
+⚠️ **Ya no hay corte por sensor.** Si el hilo se traba, los motores empujan hasta que se cumpla
+el tiempo. La protección real es **el límite de corriente de la fuente** (~1 A) y
+`/cobertor_parar`. Por eso se calibra con tiempos cortos y se va subiendo.
 
 ---
 

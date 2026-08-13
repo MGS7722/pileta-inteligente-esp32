@@ -33,11 +33,19 @@ desde un bot de Telegram. Todo corre en un solo ESP32 con el programa
 - Arranca APAGADA; se activa desde Telegram (auto / ON / OFF)
 
 ## Sistema 3 — Cobertor automático retráctil
-- Cobertor motorizado que se abre y cierra: rodillo que enrolla la lona de un lado +
-  cables de tracción que la tiran del otro
+- Cobertor motorizado que se abre y cierra con un **lazo de hilo entre los dos ejes**: el hilo
+  se enrolla en un carrete mientras se desenrolla del otro
 - 2 motores DC con reductora (Pololu 6V 500 RPM) por driver L298N
-- Lógica "un motor tira / el otro queda suelto" para no trabarse; velocidad por PWM
-- 2 fines de carrera detectan los topes (abierto / cerrado) y frenan el motor
+- **Los dos motores giran juntos**, en la misma dirección: el lazo se traba si uno empuja y el
+  otro queda suelto
+- **El recorrido se mide por TIEMPO**, no por sensor, y se calibra desde Telegram
+  (`/tiempo_abrir`, `/tiempo_cerrar`), con un valor propio para cada movimiento
+- **El sentido de cada motor se invierte desde Telegram** (`/sentido_a`, `/sentido_b`): que los
+  dos giren para el mismo lado depende de cómo queden montados, y se corrige sin tocar cables
+- Arrancan con una **patada al 100 %** y siguen a la velocidad de `/velocidad`; al terminar
+  **frenan en seco**
+- 2 fines de carrera **informan la posición** en `/status`; desde el 2026-08-13 **no cortan el
+  movimiento**
 - Controlable desde Telegram: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar
 
 ---
@@ -47,10 +55,12 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Calentador: /calentador_auto, /calentador_on, /calentador_off
 - Luces: /luces_auto, /luces_on, /luces_off
 - Cobertor: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar
-- Prueba de taller: /motor_a, /motor_b (mueven un motor solo 2 segundos, sin fines de carrera)
+- Prueba de taller: /motor_a, /motor_b (mueven un motor solo; `/motor_a 5` para elegir los
+  segundos, 2 por omisión)
 - Efectos de luces: /efecto 1 (espectro) | 2 (mezcla) | 3 (cometa) | 4 (arcoíris)
-- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (motores, en %), /brillo 70,
-  /leds 21, /corriente 120, /orden, /piso 12 — todos guardados en NVS
+- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (motores, en %), /tiempo_abrir 8 y
+  /tiempo_cerrar 8 (segundos del recorrido), /sentido_a y /sentido_b (invertir un motor),
+  /brillo 70, /leds 21, /corriente 120, /orden, /piso 12 — todos guardados en NVS
 - Consultas: /status, /temp, /audio, /espectro, /diag, /trace, /onda, /luces_test, /ip
 
 ---

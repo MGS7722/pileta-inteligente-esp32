@@ -5,7 +5,7 @@ desde un bot de Telegram:
 
 1. **Calentador** — sensor de temperatura DS18B20 + relé. Arranca **apagado**; se activa desde Telegram (automático o forzado ON).
 2. **Luces disco** — micrófono + **tira WS2812** de 21 píxeles. El sonido se analiza por FFT y se separa en **graves, medios y agudos**; con esas tres bandas se pintan cuatro efectos distintos, con un destello en cada golpe del ritmo. Arranca apagada; se activa desde Telegram.
-3. **Cobertor** — 2 motores por L298N + fines de carrera. Abre/cierra desde Telegram y frena solo al llegar al tope.
+3. **Cobertor** — 2 motores por L298N unidos por un lazo de hilo. Los dos giran juntos y el recorrido se mide **por tiempo**, ajustable desde Telegram.
 4. **Pantalla LCD** — muestra la temperatura y el estado en vivo.
 
 ---
@@ -109,7 +109,7 @@ El ESP32 tiene **dos núcleos** y el programa los usa a los dos:
 En cada vuelta, el `loop()` atiende cada sistema con su propio ritmo:
 
 1. **Sonido y luces** → en cada vuelta.
-2. **Cobertor** → en cada vuelta (para frenar apenas toca el fin de carrera).
+2. **Cobertor** → en cada vuelta (para frenar apenas se cumple el tiempo del recorrido).
 3. **Temperatura y calentador** → cada 2 segundos.
 
 ### Cómo mandan los comandos de Telegram
@@ -211,9 +211,13 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/cobertor_abrir` — destapar la pileta
 - `/cobertor_cerrar` — tapar la pileta
 - `/cobertor_parar` — frenar el cobertor
-- `/motor_a` / `/motor_b` — prueba de taller: mueve **un** motor 2 segundos, sin mirar los
-  fines de carrera. Para verificar cableado y sentido de giro con los motores desacoplados
-  (ver `CABLEADO-PASO-A-PASO.md`)
+- `/tiempo_abrir 8` / `/tiempo_cerrar 8` — cuántos segundos dura cada movimiento (de 1 a 60).
+  Cada uno lleva su propio número porque cerrar suele costar más. Quedan guardados
+- `/sentido_a` / `/sentido_b` — invierte el giro de ese motor **sin tocar ningún cable** del
+  L298N. Queda guardado. El mensaje te dice hacia qué lado gira cada uno y si quedaron alineados
+- `/motor_a` / `/motor_b` — prueba de taller: mueve **un** motor y suelta el otro. `/motor_a 5`
+  para elegir los segundos (2 por omisión). Usar con el hilo DESATADO: con el lazo puesto el
+  motor suelto traba la prueba (ver `CABLEADO-PASO-A-PASO.md`)
 - `/velocidad 35` — qué tan rápido se mueven los motores, en % (de 20 a 100). Queda guardada
   en la memoria del ESP32. Sin número, muestra la actual
 
@@ -258,8 +262,11 @@ Dos formas de resolverlo:
   3000 Hz → 2998 Hz. Las tres bandas responden a lo suyo, y **sólo** a lo suyo.
 - **Los cuatro efectos con música**: siguen el ritmo, las tres zonas se mueven cada una por su
   lado y el destello del golpe se ve.
-- **Los dos motores del cobertor** giran con `/motor_a` y `/motor_b`, a la velocidad que fija
-  `/velocidad`.
+- **Los dos motores del cobertor** giran juntos con `/cobertor_abrir` y `/cobertor_cerrar`. El
+  corte por tiempo es exacto: un movimiento de 10 s midió **10008 ms** y una prueba de 2 s midió
+  **2019 ms**.
+- **El bot ya no se queda mudo**: el saludo TLS tenía un timeout de fábrica de 120 s. Con
+  `setHandshakeTimeout(5)` el latido bajó de 117 s a un máximo de 4 s.
 - **El calentador**: ciclo completo en modo AUTO, calentó y cortó solo.
 
 ## 🚧 Pendiente
@@ -267,6 +274,9 @@ Dos formas de resolverlo:
 La lista completa, con prioridades y contexto, está en **[`../docs/PENDIENTES.md`](../docs/PENDIENTES.md)**.
 Lo más urgente:
 
-- **Conectar los 2 fines de carrera** del cobertor y verificar que corten el movimiento.
-- **Montar el mecanismo** (rodillo + cables + lona) y definir el sentido de giro de cada motor.
-- **Histéresis del calentador**: son 5 °C, mucho para una pileta. Falta decidir si baja a 2 °C.
+- **Montar el mecanismo con la lona** y anotar los valores definitivos de `/velocidad`,
+  `/tiempo_abrir` y `/tiempo_cerrar`.
+- **Conectar los 2 fines de carrera.** Ojo: ya **no cortan el movimiento** (el recorrido va por
+  tiempo); sólo informan la posición en `/status`.
+- **Probar los tres sistemas a la vez**: nunca se hizo, y es donde puede aparecer ruido en el
+  ADC o una caída de tensión por los picos de los motores.
