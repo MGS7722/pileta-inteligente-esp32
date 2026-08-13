@@ -353,7 +353,7 @@ const uint32_t PWM_MOTORES_HZ = 8000;
 const uint8_t       PWM_ARRANQUE = 255;
 const unsigned long ARRANQUE_MS  = 300;
 
-// Cuánto dura cada movimiento del cobertor, en segundos.
+// Cuánto dura cada movimiento del cobertor, en DÉCIMAS de segundo.
 //
 // El mecanismo es un lazo de hilo entre los dos ejes: los dos motores empujan
 // juntos hacia el mismo lado y el recorrido termina POR TIEMPO. Abrir y cerrar
@@ -361,11 +361,16 @@ const unsigned long ARRANQUE_MS  = 300;
 // pesa y el hilo roza más. Se ajustan desde Telegram (/tiempo_abrir y
 // /tiempo_cerrar) y quedan guardados en NVS, así se calibran en el taller sin
 // recompilar ni volver a enchufar el USB.
-uint8_t tiempoAbrirSeg  = 8;
-uint8_t tiempoCerrarSeg = 8;
+//
+// Se guardan en décimas y no en segundos enteros porque el recorrido no tiene
+// por qué caer justo en un número redondo: a esta velocidad, medio segundo es
+// varios centímetros de hilo. Los comandos igual se escriben en segundos, con
+// coma o punto (/tiempo_abrir 4.5).
+uint16_t tiempoAbrirDecimas  = 80;   // 8,0 s
+uint16_t tiempoCerrarDecimas = 80;
 
-const uint8_t TIEMPO_COBERTOR_MINIMO = 1;
-const uint8_t TIEMPO_COBERTOR_MAXIMO = 60;
+const uint16_t TIEMPO_COBERTOR_MINIMO = 1;     // 0,1 s
+const uint16_t TIEMPO_COBERTOR_MAXIMO = 600;   // 60,0 s
 
 // Los dos motores del cobertor.
 //
@@ -375,27 +380,49 @@ const uint8_t TIEMPO_COBERTOR_MAXIMO = 60;
 // sola implementación de "mover", "frenar" y "soltar", y los dos motores pasan
 // por exactamente el mismo código.
 //
-// `invertido` resuelve que "los dos para el mismo lado" es una condición FÍSICA,
-// no eléctrica: según cómo queden montados (enfrentados o alineados), mover el
-// hilo en la misma dirección puede exigir que uno gire horario y el otro
-// antihorario. El flag da vuelta un motor sin desatornillar sus cables del
-// L298N, y se guarda en NVS porque el hardware vive en el taller.
+// El sentido NO vive acá adentro: lo deciden las dos perillas de abajo, y se
+// calcula para los dos motores en el mismo lugar y en la misma línea. Así es
+// estructuralmente imposible que uno quede configurado y el otro no.
 struct Motor {
   const uint8_t pinEntrada1;
   const uint8_t pinEntrada2;
   const uint8_t pinHabilitacion;   // el que lleva el PWM
   const char    nombre;            // 'A' o 'B', sólo para los mensajes
-  bool          invertido;
 };
 
-Motor motorA = { MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_EN, 'A', false };
-Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B', false };
+Motor motorA = { MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_EN, 'A' };
+Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B' };
+
+// --- Dos sistemas de sentido, SEPARADOS y sin pisarse ---
+//
+// 1) EL COBERTOR (/cobertor_abrir y /cobertor_cerrar).
+//
+//    Los dos motores reciben SIEMPRE la misma polaridad, calculada una sola vez
+//    y aplicada a los dos: van los dos hacia el mismo lado, nunca uno contra el
+//    otro. Es una garantía estructural, no una convención — mirá
+//    iniciarMovimiento(): los dos motorMover() reciben literalmente la misma
+//    variable, así que no hay estado posible en el que difieran.
+//
+//    Esta perilla decide únicamente CUÁL de las dos direcciones se llama
+//    "abrir", y se cambia con /cobertor_sentido.
+bool cobertorInvertido = false;
+
+// 2) LAS PRUEBAS DE TALLER (/motor_a y /motor_b).
+//
+//    Independientes entre sí y del cobertor: sirven para mover un motor suelto y
+//    mirarle el eje. Cambiar el sentido de una prueba con /sentido_a o
+//    /sentido_b NO altera en nada cómo se mueve el cobertor.
+bool pruebaAInvertida = false;
+bool pruebaBInvertida = false;
+
+// Las tres se guardan en NVS: el hardware vive en el taller y se calibra por
+// Telegram, sin destornillador y sin recompilar.
 
 // Prueba de taller (/motor_a y /motor_b): cuánto gira un motor solo, para
 // verificar cableado y sentido de giro. Es sólo el valor por omisión: el comando
-// acepta los segundos que se quieran (/motor_a 5), dentro del mismo rango que
-// los movimientos del cobertor.
-const uint8_t PRUEBA_MOTOR_SEGUNDOS = 2;
+// acepta el tiempo que se quiera (/motor_a 2.5), en el mismo rango y con la
+// misma precisión de décimas que los movimientos del cobertor.
+const uint16_t PRUEBA_MOTOR_DECIMAS = 20;   // 2,0 s
 
 // ============================================================
 //   TIEMPOS
@@ -659,10 +686,11 @@ void setup() {
   efectoActual      = preferencias.getUChar("efecto", efectoActual);
   tiraEsGRB         = preferencias.getBool("tiraGRB", tiraEsGRB);
   pisoRuidoBanda    = preferencias.getUChar("pisoRuido", pisoRuidoBanda);
-  tiempoAbrirSeg    = preferencias.getUChar("tiempoAbrir", tiempoAbrirSeg);
-  tiempoCerrarSeg   = preferencias.getUChar("tiempoCerrar", tiempoCerrarSeg);
-  motorA.invertido  = preferencias.getBool("motAInv", motorA.invertido);
-  motorB.invertido  = preferencias.getBool("motBInv", motorB.invertido);
+  tiempoAbrirDecimas  = preferencias.getUShort("tAbrirDec",  tiempoAbrirDecimas);
+  tiempoCerrarDecimas = preferencias.getUShort("tCerrarDec", tiempoCerrarDecimas);
+  cobertorInvertido = preferencias.getBool("cobInvert", cobertorInvertido);
+  pruebaAInvertida  = preferencias.getBool("pruebaAInv", pruebaAInvertida);
+  pruebaBInvertida  = preferencias.getBool("pruebaBInv", pruebaBInvertida);
 
   // Los valores guardados podrían venir de una versión anterior con otros
   // rangos: se acotan antes de usarlos, para que un número absurdo en memoria
@@ -672,8 +700,8 @@ void setup() {
   corrienteMaximaMa = constrain(corrienteMaximaMa, 50, 2000);
   efectoActual      = constrain(efectoActual, EFECTO_MINIMO, EFECTO_MAXIMO);
   pisoRuidoBanda    = constrain(pisoRuidoBanda, 0, 200);
-  tiempoAbrirSeg    = constrain(tiempoAbrirSeg,  TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
-  tiempoCerrarSeg   = constrain(tiempoCerrarSeg, TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
+  tiempoAbrirDecimas  = constrain(tiempoAbrirDecimas,  TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
+  tiempoCerrarDecimas = constrain(tiempoCerrarDecimas, TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
 
   // Tira de luces (arranca APAGADA; se activa desde Telegram)
   tira.begin();
@@ -1596,13 +1624,22 @@ int velocidadPorcentaje() {
 // Las tres funciones de abajo son la ÚNICA forma de tocar un motor en todo el
 // programa, y las comparten los dos: no hay una versión para A y otra para B.
 
-// Gira. `haciaAbrir` es la dirección del MOVIMIENTO, no el sentido de giro: cuál
-// de los dos sentidos eléctricos le toca a este motor lo decide su flag.
-void motorMover(Motor &motor, bool haciaAbrir, uint8_t pwm) {
-  const bool avanza = (haciaAbrir != motor.invertido);   // XOR: el flag da vuelta ambos sentidos
+// Gira. `avanza` ya viene resuelto por quien llama: acá sólo se aplica al motor.
+void motorMover(Motor &motor, bool avanza, uint8_t pwm) {
   digitalWrite(motor.pinEntrada1, avanza ? HIGH : LOW);
   digitalWrite(motor.pinEntrada2, avanza ? LOW  : HIGH);
   analogWrite(motor.pinHabilitacion, pwm);
+}
+
+// Polaridad del COBERTOR para una dirección dada. Devuelve UN solo valor, que va
+// a los dos motores: por eso no pueden terminar girando en contra.
+bool sentidoDelCobertor(bool haciaAbrir) {
+  return (haciaAbrir != cobertorInvertido);
+}
+
+// Polaridad de la PRUEBA de un motor suelto. Nada que ver con el cobertor.
+bool sentidoDeLaPrueba(char cual) {
+  return (cual == 'A') ? !pruebaAInvertida : !pruebaBInvertida;
 }
 
 // Freno en seco: el puente une los dos bornes del motor y lo clava. Es lo que se
@@ -1660,20 +1697,26 @@ void aplicarVelocidadDeRegimen() {
 // hace varios minutos— y cortar en el acto. Primero TODOS los datos del
 // movimiento, el estado al final: cuando el loop ve el estado nuevo, ya está
 // todo listo.
-void iniciarMovimiento(EstadoCobertor queHace, bool haciaAbrir, uint8_t segundos, char cualMotor) {
+void iniciarMovimiento(EstadoCobertor queHace, bool haciaAbrir, uint16_t decimas, char cualMotor) {
   inicioMovimientoCobertor = millis();
-  duracionMovimientoMs     = (unsigned long)segundos * 1000UL;
+  duracionMovimientoMs     = (unsigned long)decimas * 100UL;
 
-  // La prueba de taller mueve UN motor y suelta el otro, para poder mirar el
-  // sentido de giro de cada uno por separado. Abrir y cerrar mueven los dos.
   if (queHace == COB_PRUEBA) {
-    Motor &enPrueba = (cualMotor == 'A') ? motorA : motorB;
-    Motor &elOtro   = (cualMotor == 'A') ? motorB : motorA;
-    motorSoltar(elOtro);
-    motorMover(enPrueba, haciaAbrir, PWM_ARRANQUE);
+    // Prueba de taller: mueve UN motor con SU propio sentido y suelta el otro.
+    const bool avanza = sentidoDeLaPrueba(cualMotor);
+    if (cualMotor == 'A') {
+      motorSoltar(motorB);
+      motorMover(motorA, avanza, PWM_ARRANQUE);
+    } else {
+      motorSoltar(motorA);
+      motorMover(motorB, avanza, PWM_ARRANQUE);
+    }
   } else {
-    motorMover(motorA, haciaAbrir, PWM_ARRANQUE);
-    motorMover(motorB, haciaAbrir, PWM_ARRANQUE);
+    // Cobertor: UNA sola polaridad para los dos motores. Que reciban la misma
+    // variable es lo que garantiza que jamás puedan tirar uno contra el otro.
+    const bool avanza = sentidoDelCobertor(haciaAbrir);
+    motorMover(motorA, avanza, PWM_ARRANQUE);
+    motorMover(motorB, avanza, PWM_ARRANQUE);
   }
 
   motorEnPrueba   = (queHace == COB_PRUEBA) ? cualMotor : '-';
@@ -1690,23 +1733,23 @@ void iniciarMovimiento(EstadoCobertor queHace, bool haciaAbrir, uint8_t segundos
     Serial.print(cualMotor);
   }
   Serial.print(" | ");
-  Serial.print(segundos);
+  Serial.print(segundosTexto(decimas));
   Serial.print(" s | t=");
   Serial.println(inicioMovimientoCobertor);
 }
 
 void cobertorAbrir() {
-  iniciarMovimiento(COB_ABRIENDO, true, tiempoAbrirSeg, '-');
+  iniciarMovimiento(COB_ABRIENDO, true, tiempoAbrirDecimas, '-');
 }
 
 void cobertorCerrar() {
-  iniciarMovimiento(COB_CERRANDO, false, tiempoCerrarSeg, '-');
+  iniciarMovimiento(COB_CERRANDO, false, tiempoCerrarDecimas, '-');
 }
 
 // Prueba de taller: un motor solo, en la dirección de ABRIR, que es la
 // referencia con la que se calibran los sentidos.
-void probarMotor(char cual, uint8_t segundos) {
-  iniciarMovimiento(COB_PRUEBA, true, segundos, cual);
+void probarMotor(char cual, uint16_t decimas) {
+  iniciarMovimiento(COB_PRUEBA, true, decimas, cual);
 }
 
 // Frena los dos motores y deja la máquina de estados en reposo. No decide nada
@@ -2129,7 +2172,7 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
 
       bot.sendMessage(chat_id, String(abrir ? "Abriendo" : "Cerrando") +
                                " el cobertor durante " +
-                               String(abrir ? tiempoAbrirSeg : tiempoCerrarSeg) +
+                               segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
                                " segundos.\nLos dos motores giran juntos. "
                                "Te aviso cuando termine.\n"
                                "Para frenar antes: /cobertor_parar", "");
@@ -2153,25 +2196,25 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
 
     String arg = text.substring(8);   // lo que viene después de "/motor_a"
     arg.trim();
-    const int segundos = (arg.length() == 0) ? PRUEBA_MOTOR_SEGUNDOS : arg.toInt();
+    const uint16_t decimas = (arg.length() == 0) ? PRUEBA_MOTOR_DECIMAS
+                                                 : leerTiempoEnDecimas(arg);
 
     if (estadoCobertor != COB_PARADO) {
       bot.sendMessage(chat_id, "El cobertor se esta moviendo. Frenalo con /cobertor_parar "
                                "antes de probar un motor suelto.", "");
-    } else if (segundos < TIEMPO_COBERTOR_MINIMO || segundos > TIEMPO_COBERTOR_MAXIMO) {
+    } else if (decimas < TIEMPO_COBERTOR_MINIMO || decimas > TIEMPO_COBERTOR_MAXIMO) {
       bot.sendMessage(chat_id, "Valor invalido: usa un numero entre " +
-                               String(TIEMPO_COBERTOR_MINIMO) + " y " +
-                               String(TIEMPO_COBERTOR_MAXIMO) + " segundos. Ej: /motor_" +
-                               letra + " 5", "");
+                               segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
+                               segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
+                               "Se admiten decimales: /motor_" + letra + " 2.5", "");
     } else {
-      const bool invertido = (cual == 'A') ? motorA.invertido : motorB.invertido;
-      probarMotor(cual, (uint8_t)segundos);
+      const String giro = giroTexto(sentidoDeLaPrueba(cual));
+      probarMotor(cual, decimas);
 
-      bot.sendMessage(chat_id, String("Motor ") + cual + " girando " + String(segundos) +
-                               " segundos, en la direccion de ABRIR.\n\n"
-                               "Tiene que girar " + giroTexto(invertido, true) + ".\n\n"
-                               "Si va para el otro lado: /sentido_" + letra +
-                               " y volve a probar (no hace falta tocar ningun cable).\n"
+      bot.sendMessage(chat_id, String("Motor ") + cual + " girando " + segundosTexto(decimas) +
+                               " segundos.\n\n"
+                               "Tiene que girar " + giro + ".\n\n"
+                               "Si va para el otro lado: /sentido_" + letra + "\n"
                                "Para frenarlo antes: /cobertor_parar\n"
                                "Para otro tiempo: /motor_" + letra + " 5\n\n"
                                "OJO: esto mueve UN motor y deja al otro suelto. Con el hilo "
@@ -2231,62 +2274,72 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     const bool abrir = text.startsWith("/tiempo_abrir");
     String arg = text.substring(abrir ? 13 : 14);   // el largo de cada comando
     arg.trim();
-    const int segundos = arg.toInt();
-    const String cual  = abrir ? "abrir" : "cerrar";
+    const uint16_t decimas = leerTiempoEnDecimas(arg);
+    const String cual = abrir ? "abrir" : "cerrar";
 
     if (arg.length() == 0) {
       bot.sendMessage(chat_id, "Tiempo para " + cual + ": " +
-                               String(abrir ? tiempoAbrirSeg : tiempoCerrarSeg) +
-                               " segundos.\nPara cambiarlo: /tiempo_" + cual + " 8", "");
-    } else if (segundos < TIEMPO_COBERTOR_MINIMO || segundos > TIEMPO_COBERTOR_MAXIMO) {
+                               segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
+                               " segundos.\nPara cambiarlo: /tiempo_" + cual + " 4.5", "");
+    } else if (decimas < TIEMPO_COBERTOR_MINIMO || decimas > TIEMPO_COBERTOR_MAXIMO) {
       bot.sendMessage(chat_id, "Valor invalido: usa un numero entre " +
-                               String(TIEMPO_COBERTOR_MINIMO) + " y " +
-                               String(TIEMPO_COBERTOR_MAXIMO) + " segundos. Ej: /tiempo_" +
-                               cual + " 8", "");
+                               segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
+                               segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
+                               "Se admiten decimales: /tiempo_" + cual + " 4.5", "");
     } else {
       if (abrir) {
-        tiempoAbrirSeg = (uint8_t)segundos;
-        preferencias.putUChar("tiempoAbrir", tiempoAbrirSeg);
+        tiempoAbrirDecimas = decimas;
+        preferencias.putUShort("tAbrirDec", tiempoAbrirDecimas);
       } else {
-        tiempoCerrarSeg = (uint8_t)segundos;
-        preferencias.putUChar("tiempoCerrar", tiempoCerrarSeg);
+        tiempoCerrarDecimas = decimas;
+        preferencias.putUShort("tCerrarDec", tiempoCerrarDecimas);
       }
-      bot.sendMessage(chat_id, "Tiempo para " + cual + ": " + String(segundos) +
+      bot.sendMessage(chat_id, "Tiempo para " + cual + ": " + segundosTexto(decimas) +
                                " segundos. Guardado: sobrevive reinicios.\n"
                                "Probalo con /cobertor_" + cual + ".", "");
     }
   }
-  // Da vuelta el sentido de un motor sin tocar un solo cable del L298N.
-  else if (text == "/sentido_a" || text == "/sentido_b") {
-    const bool esA = (text == "/sentido_a");
-
+  // Invierte el sentido del COBERTOR. Sólo toca /cobertor_abrir y
+  // /cobertor_cerrar: las pruebas de taller siguen como estaban.
+  else if (text == "/cobertor_sentido") {
     if (estadoCobertor != COB_PARADO) {
       bot.sendMessage(chat_id, "El cobertor se esta moviendo. Frenalo con /cobertor_parar "
-                               "antes de cambiar el sentido de un motor.", "");
+                               "antes de cambiar el sentido.", "");
     } else {
-      if (esA) {
-        motorA.invertido = !motorA.invertido;
-        preferencias.putBool("motAInv", motorA.invertido);
+      cobertorInvertido = !cobertorInvertido;
+      preferencias.putBool("cobInvert", cobertorInvertido);
+
+      bot.sendMessage(chat_id, "Sentido del cobertor invertido. Guardado.\n\n"
+                               "Ahora, al ABRIR los dos motores giran " +
+                               giroTexto(sentidoDelCobertor(true)) + ".\n"
+                               "Al CERRAR, los dos giran " +
+                               giroTexto(sentidoDelCobertor(false)) + ".\n\n"
+                               "Los dos motores van SIEMPRE para el mismo lado: reciben la "
+                               "misma polaridad, nunca uno contra el otro.\n\n"
+                               "Esto no cambia nada de /motor_a ni /motor_b.", "");
+    }
+  }
+  // Sentido de una PRUEBA de taller. No afecta al cobertor.
+  else if (text == "/sentido_a" || text == "/sentido_b") {
+    const char cual = (text == "/sentido_a") ? 'A' : 'B';
+
+    if (estadoCobertor != COB_PARADO) {
+      bot.sendMessage(chat_id, "Hay un motor en movimiento. Frenalo con /cobertor_parar "
+                               "antes de cambiar el sentido.", "");
+    } else {
+      if (cual == 'A') {
+        pruebaAInvertida = !pruebaAInvertida;
+        preferencias.putBool("pruebaAInv", pruebaAInvertida);
       } else {
-        motorB.invertido = !motorB.invertido;
-        preferencias.putBool("motBInv", motorB.invertido);
+        pruebaBInvertida = !pruebaBInvertida;
+        preferencias.putBool("pruebaBInv", pruebaBInvertida);
       }
 
-      const bool invertido = esA ? motorA.invertido : motorB.invertido;
-
-      bot.sendMessage(chat_id, String("Motor ") + (esA ? "A" : "B") + ": sentido " +
-                               sentidoMotorTexto(invertido) + ". Guardado.\n\n"
-                               "Ahora este motor gira:\n"
-                               "  al ABRIR  -> " + giroTexto(invertido, true) + "\n"
-                               "  al CERRAR -> " + giroTexto(invertido, false) + "\n\n"
-                               "El otro motor (" + (esA ? "B" : "A") + ") al ABRIR gira " +
-                               giroTexto(esA ? motorB.invertido : motorA.invertido, true) + ".\n" +
-                               ((motorA.invertido == motorB.invertido)
-                                  ? "Los dos giran para el MISMO lado."
-                                  : "Los dos giran para lados CONTRARIOS.") + "\n\n"
-                               "Es la referencia del driver: si en el eje lo ves al reves, "
-                               "leelo dado vuelta. Lo que importa es que el hilo avance, "
-                               "no como se llame cada sentido.", "");
+      bot.sendMessage(chat_id, String("Prueba del motor ") + cual + ": ahora gira " +
+                               giroTexto(sentidoDeLaPrueba(cual)) + ".\nGuardado.\n\n"
+                               "Esto vale SOLO para /motor_" + (cual == 'A' ? "a" : "b") +
+                               ". El cobertor no cambia: para invertirlo esta "
+                               "/cobertor_sentido.", "");
     }
   }
   else if (text == "/audio") {
@@ -2353,7 +2406,8 @@ String armarAyuda(String from_name) {
   s += "/tiempo_cerrar 8 - cuantos segundos dura el cerrar\n";
   s += "/velocidad 35 - que tan rapido se mueven los motores (%)\n";
   s += "/motor_a 5 - probar un motor solo N segundos (taller)\n";
-  s += "/sentido_a, /sentido_b - dar vuelta el giro de un motor\n\n";
+  s += "/cobertor_sentido - invertir el sentido del cobertor\n";
+  s += "/sentido_a, /sentido_b - invertir el giro de esa PRUEBA\n\n";
   s += "INFORMACIÓN:\n";
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
@@ -2436,11 +2490,12 @@ String armarStatus() {
   s += (hayMusica ? "musica detectada" : "silencio");
   s += "\n";
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
-  s += "Tiempos: abrir " + String(tiempoAbrirSeg) + " s | cerrar " +
-       String(tiempoCerrarSeg) + " s\n";
+  s += "Tiempos: abrir " + segundosTexto(tiempoAbrirDecimas) + " s | cerrar " +
+       segundosTexto(tiempoCerrarDecimas) + " s\n";
   s += "Velocidad motores: " + String(velocidadPorcentaje()) + "%\n";
-  s += "Al ABRIR: motor A " + giroTexto(motorA.invertido, true) + "\n";
-  s += "          motor B " + giroTexto(motorB.invertido, true) + "\n";
+  s += "Cobertor al ABRIR: los 2 motores " + giroTexto(sentidoDelCobertor(true)) + "\n";
+  s += "Pruebas: motor A " + giroTexto(sentidoDeLaPrueba('A')) +
+       " | motor B " + giroTexto(sentidoDeLaPrueba('B')) + "\n";
   s += "Fines de carrera: " + finesDeCarreraTexto() + "\n";
   s += "WiFi: ";
   s += (WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado");
@@ -2629,10 +2684,6 @@ String finesDeCarreraTexto() {
   return s;
 }
 
-String sentidoMotorTexto(bool invertido) {
-  return invertido ? "invertido" : "normal";
-}
-
 // Hacia qué lado gira un motor, en palabras.
 //
 // El programa sabe con total certeza qué polaridad le aplica, pero NO hacia
@@ -2641,8 +2692,27 @@ String sentidoMotorTexto(bool invertido) {
 // REFERENCIA DEL DRIVER —con la entrada 1 en alto lo llamamos horario—, que es
 // siempre consistente: si en el eje se ve al revés, se lee dado vuelta y listo.
 // Lo que importa para el cobertor no es cómo se llame cada sentido, sino que los
-// dos motores coincidan.
-String giroTexto(bool invertido, bool haciaAbrir) {
-  const bool avanza = (haciaAbrir != invertido);
+// dos motores acompañen.
+String giroTexto(bool avanza) {
   return avanza ? "a la derecha (horario)" : "a la izquierda (antihorario)";
 }
+
+// Décimas de segundo -> texto en segundos con un decimal ("45" -> "4.5").
+String segundosTexto(uint16_t decimas) {
+  return String(decimas / 10.0, 1);
+}
+
+// Lee un tiempo escrito en SEGUNDOS y lo devuelve en décimas.
+//
+// Acepta coma o punto: en un teclado en español la coma sale primero, y que el
+// comando fallara por eso sería una trampa tonta. Devuelve 0 si el texto no es
+// un número usable, que el rango válido descarta después.
+uint16_t leerTiempoEnDecimas(String texto) {
+  texto.trim();
+  texto.replace(',', '.');
+  const float segundos = texto.toFloat();
+  if (segundos <= 0) return 0;
+  return (uint16_t)lroundf(segundos * 10.0f);
+}
+
+

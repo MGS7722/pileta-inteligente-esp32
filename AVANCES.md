@@ -646,14 +646,32 @@ mecanismo a mano.
 
 | Comando | Qué hace |
 |---|---|
-| `/tiempo_abrir N` · `/tiempo_cerrar N` | Segundos de cada movimiento, 1 a 60, en NVS |
-| `/sentido_a` · `/sentido_b` | Invierte ese motor sin tocar cables, en NVS |
+| `/tiempo_abrir N` · `/tiempo_cerrar N` | Duración de cada movimiento, 0,1 a 60 s, en NVS. Admite decimales (`4.5`), con coma o punto |
+| `/cobertor_sentido` | Invierte el cobertor. **Sólo** abrir/cerrar |
+| `/sentido_a` · `/sentido_b` | Invierte esa PRUEBA. **Sólo** `/motor_a` y `/motor_b` |
 | `/motor_a N` · `/motor_b N` | Prueba de un motor N segundos (2 por omisión, **no** se guarda) |
 
-Los mensajes de `/sentido_*`, `/motor_*` y `/status` informan **hacia qué lado gira cada motor**
-y avisan si los dos quedaron para el mismo lado o para lados contrarios. Es la referencia del
-driver, no el eje real: si en el eje se ve al revés se lee dado vuelta, porque lo que importa es
-que el hilo avance, no cómo se llame cada sentido.
+**Dos sistemas de sentido que no se pisan.** El primer intento fue un flag por motor, y en la
+mano resultó un laberinto: cuatro combinaciones, dos de ellas inservibles, y tocar una sola
+cambiaba dos cosas a la vez —si los motores se acompañan **y** cuál dirección es abrir—. Mariano
+lo probó un buen rato sin poder llegar al resultado, que es la señal de que el problema no era
+el cálculo sino la interfaz.
+
+Quedó así:
+- **El cobertor** aplica **una sola polaridad a los dos motores**: se calcula una vez y se pasa a
+  los dos `motorMover()`. No es una convención, es estructural — no existe estado del programa en
+  el que puedan tirar uno contra el otro. `/cobertor_sentido` sólo elige cuál dirección es abrir.
+- **Las pruebas** tienen su propio sentido por motor, y no tocan nada del cobertor.
+
+**Consecuencia asumida**: como el cobertor da la misma polaridad a los dos, si los motores están
+montados espejados van a girar en sentidos visualmente opuestos, y eso **ya no se corrige por
+software**. Se invierten los dos cables de un motor en el L298N. Es el precio de que los sistemas
+no se contaminen, y se eligió a conciencia: una perilla que hace una cosa y un cable bien puesto,
+antes que cuatro combinaciones que se pisan.
+
+Los mensajes de `/cobertor_sentido`, `/motor_*` y `/status` informan **hacia qué lado gira cada
+motor**. Es la referencia del driver, no el eje real: si en el eje se ve al revés se lee dado
+vuelta, porque lo que importa es que el hilo avance, no cómo se llame cada sentido.
 
 **Gate**: compilado y cargado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de
 flash y 16 % de RAM**, `Hash of data verified`. Los únicos warnings son los conocidos de

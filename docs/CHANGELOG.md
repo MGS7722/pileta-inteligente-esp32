@@ -8,6 +8,37 @@
 
 ---
 
+## v5.3 — 2026-08-13 · Los sentidos, separados y sin pisarse
+
+Continuación de la v5.2, con el cobertor ya funcionando en hardware. Dos cambios pedidos en el
+taller mientras se calibraba.
+
+### Cambiado
+- **El sentido del cobertor y el de las pruebas son ahora dos sistemas independientes.** Antes
+  había un flag por motor (`/sentido_a`, `/sentido_b`) que servía para las dos cosas a la vez, y
+  en la mano era un laberinto: cuatro combinaciones, dos de ellas inservibles, y tocar una sola
+  cambiaba dos cosas (si los motores se acompañan **y** cuál dirección es abrir). Se podía dar
+  vueltas indefinidamente sin llegar al resultado.
+  - **`/cobertor_sentido`** invierte el cobertor. Los dos motores reciben **siempre la misma
+    polaridad**, calculada una vez y aplicada a los dos: no existe estado del programa en el que
+    puedan girar uno contra el otro. No toca las pruebas.
+  - **`/sentido_a` y `/sentido_b`** ahora valen **sólo** para `/motor_a` y `/motor_b`. No
+    afectan en nada al cobertor.
+- **Los tiempos aceptan decimales**: `/tiempo_abrir 4.5`, con coma o punto. Por dentro se
+  guardan en décimas de segundo (0,1 a 60 s) porque el recorrido no tiene por qué caer en un
+  número redondo: a esta velocidad, medio segundo son varios centímetros de hilo. `/motor_a 2.5`
+  también.
+
+### Ojo al actualizar
+- Los tiempos cambian de formato de guardado, así que **vuelven a 8,0 s** una vez. El resto de
+  la configuración no se toca.
+- Como el cobertor aplica la misma polaridad a los dos motores, **si están montados espejados**
+  (uno enfrentado al otro) van a girar en sentidos visualmente opuestos, y eso ya **no se
+  corrige por software**. Se invierten los dos cables de un motor en el L298N (`OUT3` ↔ `OUT4`),
+  con la fuente apagada. Es el precio de que los dos sistemas no se contaminen.
+
+---
+
 ## v5.2 — 2026-08-13 · El cobertor, rehecho
 
 El mecanismo del cobertor cambió: ahora es un **lazo de hilo entre los dos ejes**, así que los

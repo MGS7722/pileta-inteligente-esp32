@@ -211,10 +211,13 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/cobertor_abrir` — destapar la pileta
 - `/cobertor_cerrar` — tapar la pileta
 - `/cobertor_parar` — frenar el cobertor
-- `/tiempo_abrir 8` / `/tiempo_cerrar 8` — cuántos segundos dura cada movimiento (de 1 a 60).
-  Cada uno lleva su propio número porque cerrar suele costar más. Quedan guardados
-- `/sentido_a` / `/sentido_b` — invierte el giro de ese motor **sin tocar ningún cable** del
-  L298N. Queda guardado. El mensaje te dice hacia qué lado gira cada uno y si quedaron alineados
+- `/tiempo_abrir 4.5` / `/tiempo_cerrar 5` — cuánto dura cada movimiento, de 0,1 a 60 s.
+  **Admite decimales**, con coma o punto. Cada uno lleva su propio número porque cerrar suele
+  costar más. Quedan guardados
+- `/cobertor_sentido` — invierte el cobertor: cambia cuál dirección es "abrir". Los dos motores
+  reciben siempre la misma polaridad, así que no pueden girar uno contra el otro
+- `/sentido_a` / `/sentido_b` — invierte el giro de esa **prueba de taller**. No afecta en nada
+  al cobertor
 - `/motor_a` / `/motor_b` — prueba de taller: mueve **un** motor y suelta el otro. `/motor_a 5`
   para elegir los segundos (2 por omisión). Usar con el hilo DESATADO: con el lazo puesto el
   motor suelto traba la prueba (ver `CABLEADO-PASO-A-PASO.md`)

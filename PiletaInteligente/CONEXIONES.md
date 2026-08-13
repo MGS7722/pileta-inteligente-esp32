@@ -180,8 +180,13 @@ Fines de carrera (interruptores de tope) — usar las patas COM y NO
 - **"El mismo lado" es físico, no eléctrico**: según cómo queden montados los motores
   (enfrentados o alineados), mover el hilo en la misma dirección puede exigir que uno gire
   horario y el otro antihorario.
-- Si un motor gira para el lado equivocado, **no se tocan los cables**: se manda `/sentido_a` o
-  `/sentido_b` y queda guardado en NVS. `/status` informa hacia dónde gira cada uno.
+- **El cobertor le da la misma polaridad a los dos motores**, siempre. Si aun así giran en
+  sentidos visualmente opuestos, es que están montados espejados: se invierten **los dos cables
+  de un motor** en el L298N (`OUT3` ↔ `OUT4`), con la fuente apagada. Eso NO se corrige por
+  software, a propósito.
+- Para elegir cuál dirección es "abrir": **`/cobertor_sentido`**, guardado en NVS.
+- `/sentido_a` y `/sentido_b` valen **sólo** para las pruebas `/motor_a` y `/motor_b`: no tocan
+  nada del cobertor. `/status` informa los dos sistemas por separado.
 - Arrancan con una **patada al 100 % durante 300 ms** —un motor con reductora necesita mucho más
   par para empezar a moverse que para seguir girando— y al terminar **frenan en seco**.
 

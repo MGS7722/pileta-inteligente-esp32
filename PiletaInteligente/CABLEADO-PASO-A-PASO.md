@@ -539,7 +539,7 @@ Por Telegram:
 - **Zumba pero no gira** → la velocidad quedó demasiado baja: por debajo del 20% el motor no
   vence su propio rozamiento. Subila con `/velocidad`.
 - **Gira para el lado equivocado** → **`/sentido_a`** o **`/sentido_b`**, y volvé a probar.
-  Queda guardado en el ESP32. **No hay que tocar ningún cable ni recompilar.**
+  Queda guardado. Ojo: eso invierte **sólo esta prueba**, no el cobertor.
 
 **Cuál es el lado correcto:** los dos motores tienen que mover el hilo **en la misma
 dirección**. Ojo: eso es una condición *física*. Si los motores quedaron enfrentados, "el mismo
@@ -556,7 +556,11 @@ Al ABRIR: motor A a la derecha (horario)
 9. Poné un tiempo corto: **`/tiempo_abrir 2`**, y mandá **`/cobertor_abrir`**. Tienen que
    arrancar **los dos motores juntos** y frenar solos a los 2 segundos.
 10. Mirá hacia dónde se movió el hilo. Si va al revés de lo que querés que sea "abrir", mandá
-    **`/sentido_a` y `/sentido_b`** —los dos— para dar vuelta el conjunto entero.
+    **`/cobertor_sentido`**, que da vuelta el conjunto entero.
+
+    ⚠️ Si los dos motores giran en sentidos **visualmente opuestos** (uno hacia adentro y otro
+    hacia afuera), no lo arregla ningún comando: están montados espejados. Con la fuente
+    apagada, invertí **los dos cables de un motor** en el L298N (`OUT3` ↔ `OUT4`).
 11. Subí de a poco `/tiempo_abrir` hasta que el recorrido quede completo, y hacé lo mismo con
     **`/tiempo_cerrar`**. Cerrar suele necesitar un poco más: la lona pesa y el hilo roza.
 12. Probá **`/cobertor_parar`** en medio de un movimiento: tiene que frenar al instante.

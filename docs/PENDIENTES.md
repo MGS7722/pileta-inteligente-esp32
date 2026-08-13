@@ -13,7 +13,7 @@
 |---|---|---|
 | 1 | 🔴 **Montar el mecanismo con la lona** y anotar los tres valores definitivos: `/velocidad`, `/tiempo_abrir` y `/tiempo_cerrar`. Con el hilo pelado hizo falta `/velocidad 100`; con la lona puesta va a costar más | pendiente |
 | 1b | 🟠 **Conectar los 2 fines de carrera.** Ojo: desde el 2026-08-13 **ya no cortan el movimiento** (el recorrido se mide por tiempo). Sólo informan la posición en `/status`, que ahora muestra cada pin por separado. Se comprueban sin mover motores: apretar cada uno con el dedo y mirar `/status` | pendiente |
-| 2 | ~~Definir el sentido de giro de cada motor~~ | ✅ **resuelto el 2026-08-13 sin tocar cables**: `/sentido_a` y `/sentido_b` invierten cada motor desde Telegram y quedan en NVS |
+| 2 | ~~Definir el sentido de giro del cobertor~~ | ✅ **resuelto el 2026-08-13**: `/cobertor_sentido` invierte el conjunto desde Telegram y queda en NVS. Los dos motores reciben siempre la misma polaridad, así que no pueden girar uno contra el otro |
 | 3 | ~~Decidir la histéresis del calentador~~ | ✅ **decidido el 2026-08-13**: baja de 5 °C a **2 °C**. Ya está cargado en el ESP32. **Falta verificar el ciclo con el cartucho sumergido** (no se puede probar en seco) |
 | 4 | ~~Prueba visual de los cuatro efectos~~ | ✅ **hecho el 2026-08-13**: siguen el ritmo, las tres bandas se mueven por separado |
 | 5 | 🟡 **Conseguir un capacitor de 500–1000 µF** (6,3 V o más) para poner entre `+5V` y `GND` de la tira. Adafruit lo especifica antes de conectar una tira a cualquier fuente. Con `/corriente 120` no es crítico; **sí conviene** si se pasa a un cargador de 2 A con `/corriente 500` | a comprar |
