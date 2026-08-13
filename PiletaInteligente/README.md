@@ -255,7 +255,9 @@ Dos formas de resolverlo:
 - **La tira WS2812** (2026-08-13): 21 píxeles, colores correctos a la primera, limitador de
   corriente verificado y sin interferencia sobre el micrófono.
 - **El análisis de espectro**, con tonos puros: 100 Hz → 78/117 Hz · 1000 Hz → 1012 Hz ·
-  3000 Hz → 2998 Hz. Las tres bandas responden a lo suyo.
+  3000 Hz → 2998 Hz. Las tres bandas responden a lo suyo, y **sólo** a lo suyo.
+- **Los cuatro efectos con música**: siguen el ritmo, las tres zonas se mueven cada una por su
+  lado y el destello del golpe se ve.
 - **Los dos motores del cobertor** giran con `/motor_a` y `/motor_b`, a la velocidad que fija
   `/velocidad`.
 - **El calentador**: ciclo completo en modo AUTO, calentó y cortó solo.

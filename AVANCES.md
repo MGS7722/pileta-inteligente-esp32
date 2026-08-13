@@ -29,7 +29,10 @@
       3000 Hz → 2998 Hz. Las tres bandas responden a lo suyo
 - [x] **Puerta de ruido por banda** (`/piso`) + `SONIDO_MINIMO` recalibrado a 90 con datos
       reales del taller
-- [ ] Verificar en vivo que los cuatro efectos siguen la música (queda la prueba visual)
+- [x] **Los cuatro efectos verificados en vivo con música** (2026-08-13): siguen el ritmo, las
+      tres bandas se mueven cada una por su lado y el destello del golpe se ve
+- [ ] Recalibrar `/piso` en el lugar definitivo de la pileta (el ruido de fondo del patio no
+      es el del taller)
 
 ## Sistema 3 — Cobertor automático retráctil
 
@@ -463,9 +466,28 @@ casi el doble del ruido máximo y la mitad de la música más floja.
 86 % de flash y 16 % de RAM, `Hash of data verified`. El único warning es el conocido de
 LiquidCrystal I2C.
 
-**Pendiente de esta sesión**: falta la prueba visual de los cuatro efectos con música (que la
-tira siga el ritmo de verdad) y verificar en vivo que la puerta de ruido apaga las bandas
-vacías. Todo lo demás del sistema de luces quedó verificado.
+**Verificado después de recargar el firmware** — los dos defectos, cerrados con evidencia:
+
+| Prueba | Antes | Después |
+|---|---|---|
+| `/audio` en silencio | Graves 78 · Medios 88 · Agudos 80, "música detectada" | **2 / 0 / 0, "silencio"** ✅ |
+| Tono puro de 1000 Hz | 72 / **100** / 100 | **4 / 41 / 0**, dominante 1013 Hz ✅ |
+| Tono puro de 3000 Hz | — | **0 / 0 / 27**, dominante 2996 Hz ✅ |
+| `/espectro` en silencio | — | CRUDO 7,5 / 7,5 / 6,8 → **UTIL 0 / 0 / 0** ✅ |
+
+**Y los cuatro efectos funcionan con música**: las tres zonas se mueven cada una por su lado y
+el destello del golpe se ve. El sistema de luces queda **terminado y verificado en hardware**.
+
+**Un hallazgo para tener en cuenta al instalar**: con la música saliendo del parlante de un
+celular, el crudo de la banda de graves llega a **11,8** — justo por debajo del piso de 12, con
+lo cual la banda se apagaba entera. Es la fuente, no el sistema: un parlante de 10-15 mm tiene
+su resonancia cerca de 1 kHz y por debajo casi no emite (se ve en los volúmenes medidos: 194
+con el tono de 3 kHz, 124 con el de 1 kHz, 39-60 con el de 100 Hz). Con esa fuente conviene
+**`/piso 10`**, que deja el silencio igual en cero (el ruido crudo es 7,5) y le devuelve señal
+a los graves. Con un parlante decente, 12 está bien.
+
+**Pendiente de esta sesión**: nada del sistema de luces. Queda lo del cobertor (fines de
+carrera y mecanismo) y la decisión de la histéresis — todo en `docs/PENDIENTES.md`.
 
 #### Atribución por modelo (sesión 2026-08-13)
 - **Opus 5**: guía de conexión en vivo, diagnóstico de las mediciones, investigación de

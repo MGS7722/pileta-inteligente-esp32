@@ -31,6 +31,9 @@ medidos.
   en tres zonas de 7 para el efecto ESPECTRO.
 
 ### Verificado en hardware
+- **Los dos defectos, cerrados**: en silencio las bandas pasaron de 78/88/80 a **2/0/0**, y con
+  un tono puro de 1000 Hz de 72/100/100 a **4/41/0**.
+- **Los cuatro efectos siguen la música**, con las tres zonas moviéndose por separado.
 - La tira enciende con los colores correctos sin `/orden` (chip GRB).
 - El nivel lógico alcanza sin level shifter: `VIN` a **4,4 V** → umbral 3,08 V → 0,22 V de
   margen. Más bajo es *mejor* acá.
