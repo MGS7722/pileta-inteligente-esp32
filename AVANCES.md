@@ -21,11 +21,15 @@
 - [x] **v5 — Análisis de espectro real** (2026-08-07): FFT de 256 muestras a 10 kHz con
       separación en graves / medios / agudos, ganancia automática por banda y detección de
       golpes por energía del último segundo
-- [x] **Tira WS2812 de 15 píxeles** reemplaza a los 8 LEDs, con 4 efectos y limitador de
+- [x] **Tira WS2812 de 21 píxeles** reemplaza a los 8 LEDs, con 4 efectos y limitador de
       corriente por software (permite alimentarla del ESP32 sin una tercera fuente)
-- [ ] **Probar la tira en hardware** — el código compila pero todavía no se conectó
-- [ ] Con `/onda` y `/trace`, verificar en el taller la calidad real de la señal y ajustar
-      el piso del control automático de ganancia si hiciera falta
+- [x] **Tira probada en hardware** (2026-08-13): 21 píxeles, colores correctos a la primera,
+      nivel lógico OK a 4,4 V, limitador verificado y sin interferencia sobre el micrófono
+- [x] **FFT verificada con tonos puros** (2026-08-13): 100 Hz → 78/117 Hz · 1000 Hz → 1012 Hz ·
+      3000 Hz → 2998 Hz. Las tres bandas responden a lo suyo
+- [x] **Puerta de ruido por banda** (`/piso`) + `SONIDO_MINIMO` recalibrado a 90 con datos
+      reales del taller
+- [ ] Verificar en vivo que los cuatro efectos siguen la música (queda la prueba visual)
 
 ## Sistema 3 — Cobertor automático retráctil
 
@@ -385,6 +389,88 @@ riel ya está bastante cargado** —ESP32 150–250 mA + LCD 30 mA + relé 75 mA
 - **Opus 5**: investigación (KY-037, WS2812B, WLED, Adafruit NeoPixel, algoritmos de beat
   detection), auditoría del código, plan v5, reescritura completa del sistema de luces y
   actualización de toda la documentación.
+
+### Sesión 2026-08-13 — La tira en el taller: todo verificado en hardware
+
+Primera visita al taller con la tira. Se conectó, se probó cada pieza del sistema de luces y se
+recalibró el análisis de sonido con datos medidos, no supuestos.
+
+**La tira anduvo a la primera**
+- **21 píxeles, no 15**: Mariano midió el perímetro real de la pileta con el recipiente en la
+  mano y hacían falta 70 cm. 21 divide exacto en tres zonas de 7 para el efecto ESPECTRO.
+- Los cuatro colores de `/luces_test` salieron **en el orden correcto sin tocar `/orden`**: el
+  chip es GRB, como asumía el código, y el extremo del conector era el `DIN`.
+- **Nivel lógico**: el `VIN` midió **4,4 V**, más bajo que los ~4,7 V que estimaba el plan. Es
+  *mejor*: el umbral del WS2812B (0,7 × alimentación) queda en 3,08 V y el ESP32 pasa con
+  0,22 V de margen, contra los 0,01 V que habría a 4,7 V. La documentación quedó corregida —
+  y con la advertencia de NO "mejorar" el cable USB, porque subiría la tensión y achicaría el
+  margen.
+
+**Tres verificaciones que cierran riesgos abiertos del plan v5**
+
+1. **La tira NO contamina el micrófono** (riesgo 3 del plan, el que más preocupaba). Se midió
+   alternando seis veces con `/diag`: promedio **47** con las luces apagadas y **38** con las
+   luces encendidas — el ruido ambiente de las conversaciones pesa más que la tira. Repetido
+   con `/brillo 100`: sin cambios. Descartado con evidencia.
+2. **El limitador de corriente funciona**, verificado sin querer: con brillo 70 el punto de
+   reposo del micrófono quedó en 176 y con brillo 100 también en 176-177. Idéntico, porque el
+   limitador ya topaba en 120 mA en los dos casos.
+3. **La FFT es exacta**, probada con tonos puros generados desde el celular:
+
+   | Tono | Detectó | Banda |
+   |---|---|---|
+   | 100 Hz | 78 / 117 Hz (los dos bins que rodean a 100) | graves |
+   | 1000 Hz | 1012 Hz | medios |
+   | 3000 Hz | 2998 Hz | agudos |
+
+   Era la apuesta grande del rediseño de la v5 y quedó confirmada de punta a punta.
+
+**El defecto que encontraron esas mediciones: el AGC amplificaba el silencio**
+
+Con un tono **puro** de 1000 Hz sonando, las tres bandas marcaban **72 / 100 / 100**. Las dos
+bandas sin absolutamente nada de contenido mostraban el máximo.
+
+La culpa no era del AGC sino de cómo se lo usaba: al normalizar contra el máximo reciente, una
+banda sin señal ve caer ese máximo hasta el piso y su propio ruido pasa a valer 100 %. **Acotar
+el máximo no alcanza** —con un piso de 12 y un ruido de 9 la banda seguiría mostrando 75 %—:
+hay que **restar** el ruido antes de normalizar. Es el *squelch* de WLED.
+
+Se agregó una **puerta de ruido por banda**: `util = max(0, crudo − piso)`, y el AGC pasa a
+trabajar sobre `util`. La detección de golpes también usa `util`, porque el piso se suma por
+igual al golpe y al promedio y achata el contraste entre los dos.
+
+**Y el umbral de música estaba por debajo del ruido de fondo**
+
+`SONIDO_MINIMO` valía 45, calibrado el 2026-08-06 cuando el silencio daba 9-36. El ruido real
+del taller (conversaciones) resultó ser **32-56**, así que el sistema declaraba "música
+detectada" sin que sonara nada. Con música medida entre **180 y 591**, el umbral nuevo es **90**:
+casi el doble del ruido máximo y la mitad de la música más floja.
+
+**Cambios de código**
+
+| Qué | Antes | Ahora |
+|---|---|---|
+| `SONIDO_MINIMO` | 45 | **90** |
+| Puerta de ruido por banda | no existía | **`pisoRuidoBanda = 12`**, ajustable con `/piso` y guardada en NVS |
+| Detección de golpes | sobre el valor crudo | sobre el **útil** (mejor contraste) |
+| `/diag` | una foto de 25,6 ms | + **rango de los últimos ~10 s** y aviso si el ruido supera el umbral |
+| `/espectro` | CRUDO · TOPE · NIVEL | + columna **UTIL** y el piso activo |
+
+> El `/diag` de una sola ventana costó **quince mediciones** para estimar un piso de ruido.
+> Ahora es un comando. Es la clase de detalle que sólo aparece usando la herramienta en serio.
+
+**Gate**: compilado y **cargado al ESP32** con `arduino-cli` (core esp32 3.3.10) → sin errores,
+86 % de flash y 16 % de RAM, `Hash of data verified`. El único warning es el conocido de
+LiquidCrystal I2C.
+
+**Pendiente de esta sesión**: falta la prueba visual de los cuatro efectos con música (que la
+tira siga el ritmo de verdad) y verificar en vivo que la puerta de ruido apaga las bandas
+vacías. Todo lo demás del sistema de luces quedó verificado.
+
+#### Atribución por modelo (sesión 2026-08-13)
+- **Opus 5**: guía de conexión en vivo, diagnóstico de las mediciones, investigación de
+  consumo y nivel lógico (Adafruit, PJRC, datasheet WS2812B, USB-IF), puerta de ruido,
+  recalibración, carga del firmware y actualización de la documentación.
 
 #### Atribución por modelo (sesión 2026-07-23)
 - **Opus 4.8**: /diag, pico a pico + DC removal, luces binarias, efecto en negativo (commits

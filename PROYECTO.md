@@ -23,8 +23,10 @@ desde un bot de Telegram. Todo corre en un solo ESP32 con el programa
   automático de ganancia por banda para que las tres se vean parejas
 - **Detección de golpes** comparando la energía de los graves contra el promedio del
   último segundo, con umbral que se ajusta solo según qué tan marcado sea el ritmo
-- **Tira WS2812 de 15 píxeles** (50 cm) con cuatro efectos: espectro, mezcla, cometa y
-  arcoíris; sin música pasa a una respiración lenta
+- **Puerta de ruido por banda**: lo que no supera el piso de ruido del lugar vale cero, para
+  que una banda sin contenido no se llene con el ruido del micrófono (`/piso`)
+- **Tira WS2812 de 21 píxeles** (70 cm, la vuelta completa a la pileta) con cuatro efectos:
+  espectro, mezcla, cometa y arcoíris; sin música pasa a una respiración lenta
 - **Limitador de corriente por software**: permite alimentar la tira del propio ESP32 sin
   una fuente aparte
 - Arranca APAGADA; se activa desde Telegram (auto / ON / OFF)
@@ -47,7 +49,7 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Prueba de taller: /motor_a, /motor_b (mueven un motor solo 2 segundos, sin fines de carrera)
 - Efectos de luces: /efecto 1 (espectro) | 2 (mezcla) | 3 (cometa) | 4 (arcoíris)
 - Ajustes: /temperatura 28 (objetivo), /velocidad 35 (motores, en %), /brillo 70,
-  /leds 15, /corriente 120, /orden — todos guardados en NVS
+  /leds 21, /corriente 120, /orden, /piso 12 — todos guardados en NVS
 - Consultas: /status, /temp, /audio, /espectro, /diag, /trace, /onda, /luces_test, /ip
 
 ---
@@ -60,7 +62,7 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 | Módulo relé 1 canal 5V/10A | 2 | Control calentador |
 | Cartucho calefactor 12V | 2 | Calentador de agua |
 | Display LCD 16x02 + I2C | 1 | Pantalla de estado |
-| **Tira WS2812B 5V, 30 LED/m** | rollo de 5 m | **Luces disco (se usan 50 cm = 15 píxeles)** |
+| **Tira WS2812B 5V, 30 LED/m** | rollo de 5 m | **Luces disco (se usan 70 cm = 21 píxeles)** |
 | Sensor de sonido KY-037 | 2 | Detección del ritmo (se usa **1**) |
 | Driver L298N doble puente H | 2 | Control motores cobertor |
 | Fin de carrera (limit switch) | 3 | Posición cobertor (se usan 2) |

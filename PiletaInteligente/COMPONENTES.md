@@ -15,7 +15,7 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | Módulo relé 1 canal 5V 10A | 2 | **S1** | Se usa 1 (prende el calentador) |
 | Cartucho calefactor 12V | 2 | **S1** | Se usa 1 |
 | Módulo sensor de sonido KY-037 | 2 | **S2** | Se usa **1**, por su salida AO, alimentado a 5V. Su DO no se usa |
-| **Tira WS2812B 5V, 30 LED/m** | rollo 5 m | **S2** | ⬅️ NUEVO. Se usan **50 cm = 15 píxeles**. Reemplaza a los 8 LEDs |
+| **Tira WS2812B 5V, 30 LED/m** | rollo 5 m | **S2** | Se usan **70 cm = 21 píxeles** (la vuelta completa a la pileta, medida en el taller el 2026-08-13). Reemplaza a los 8 LEDs |
 | LEDs 5mm (pack x100) | 1 | — | *Sin uso: los reemplazó la tira* |
 | Resistencias 220Ω (pack x50) | 1 | **S2** | **2 en serie (440Ω)** en la línea de datos de la tira |
 | Driver doble puente H L298N | 2 | **S3** | Se usa 1 (mueve los 2 motores del cobertor) |

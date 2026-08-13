@@ -4,7 +4,7 @@ Un solo programa para el ESP32 que controla los tres sistemas de la pileta y se 
 desde un bot de Telegram:
 
 1. **Calentador** — sensor de temperatura DS18B20 + relé. Arranca **apagado**; se activa desde Telegram (automático o forzado ON).
-2. **Luces disco** — micrófono + **tira WS2812** de 15 píxeles. El sonido se analiza por FFT y se separa en **graves, medios y agudos**; con esas tres bandas se pintan cuatro efectos distintos, con un destello en cada golpe del ritmo. Arranca apagada; se activa desde Telegram.
+2. **Luces disco** — micrófono + **tira WS2812** de 21 píxeles. El sonido se analiza por FFT y se separa en **graves, medios y agudos**; con esas tres bandas se pintan cuatro efectos distintos, con un destello en cada golpe del ritmo. Arranca apagada; se activa desde Telegram.
 3. **Cobertor** — 2 motores por L298N + fines de carrera. Abre/cierra desde Telegram y frena solo al llegar al tope.
 4. **Pantalla LCD** — muestra la temperatura y el estado en vivo.
 
@@ -139,17 +139,21 @@ La cadena, que corre entera en el núcleo 1 unas 35 veces por segundo:
 | **2. Preparado** | Quita el punto de reposo del micrófono y aplica una ventana de Hann |
 | **3. FFT** | 256 puntos → 128 frecuencias de 39 Hz cada una |
 | **4. Bandas** | Agrupa en **graves** (78–234 Hz), **medios** (234–2000 Hz) y **agudos** (2–5 kHz) |
-| **5. Ganancia automática** | Cada banda se normaliza contra **su propio** máximo reciente. Sin esto los agudos, que son mucho más débiles, quedarían siempre apagados |
-| **6. Suavizado** | Ataque instantáneo, caída suave: el golpe se ve al toque y se apaga con elegancia |
-| **7. Golpes** | Compara la energía de los graves contra el promedio del último segundo. El umbral se ajusta solo según qué tan marcados estén los golpes |
+| **5. Puerta de ruido** | A cada banda se le **resta el piso de ruido** del lugar. Lo que no lo supera no es música: es el ruido del micrófono, y vale cero |
+| **6. Ganancia automática** | Cada banda se normaliza contra **su propio** máximo reciente. Sin esto los agudos, que son mucho más débiles, quedarían siempre apagados |
+| **7. Suavizado** | Ataque instantáneo, caída suave: el golpe se ve al toque y se apaga con elegancia |
+| **8. Golpes** | Compara la energía de los graves contra el promedio del último segundo. El umbral se ajusta solo según qué tan marcados estén los golpes |
 
 > **¿Por qué 10 kHz y 256 muestras?** 10 kHz permite analizar hasta 5 kHz, donde vive todo
 > el contenido rítmico de la música — es la misma frecuencia que usa WLED, el proyecto de
 > referencia en tiras reactivas al sonido. Con 512 muestras la resolución sería el doble,
 > pero el refresco caería a 19 cuadros por segundo y se vería a los tirones.
 
-**No hay nada que calibrar a mano**: la ganancia automática se acomoda sola al volumen, y
-el umbral de los golpes se calcula a partir de la dispersión de la propia música.
+**Casi nada se calibra a mano**: la ganancia automática se acomoda sola al volumen y el umbral
+de los golpes se calcula a partir de la dispersión de la propia música. Lo único que depende
+del lugar es el **piso de ruido** (`/piso`), porque el ruido de fondo de un taller con gente
+no es el de un patio de noche. Se calibra en un minuto: `/espectro` en silencio, y se pone el
+piso un poco por encima del CRUDO más alto que se vea.
 
 > 💡 Para ver los números en vivo: **`/audio`** muestra las tres bandas en barritas, y
 > **`/espectro`** el detalle completo (valores crudos, contra qué se comparan, umbral de
@@ -169,9 +173,12 @@ Sin música, cualquiera de los cuatro pasa a una **respiración lenta** con el c
 
 ### El limitador de corriente
 
-15 píxeles en blanco pleno consumirían 900 mA, mucho más de lo que puede dar el USB. Por eso,
+21 píxeles en blanco pleno consumirían 1,3 A, mucho más de lo que puede dar el USB. Por eso,
 antes de mandar cada cuadro, el programa **calcula lo que va a consumir y baja el brillo si se
 pasa** del presupuesto. Es lo que permite alimentar la tira del propio ESP32 sin otra fuente.
+
+> Verificado en hardware el 2026-08-13: con `/brillo 70` y con `/brillo 100` el consumo medido
+> fue **idéntico**, porque el limitador ya estaba topando en los dos casos. Funciona.
 
 | Cómo esté alimentado el ESP32 | Comando |
 |---|---|
@@ -218,10 +225,12 @@ Escribile `/start` al bot para ver el menú. Comandos:
 - `/ip` — IP del ESP32
 
 **Ajustes finos (taller)**
-- `/leds 15` — cuántos píxeles tiene la tira conectada (queda guardado)
+- `/leds 21` — cuántos píxeles tiene la tira conectada (queda guardado)
 - `/corriente 120` — presupuesto de corriente en mA (queda guardado)
 - `/orden` — invierte el orden de colores GRB ↔ RGB, si los colores salen cambiados
-- `/diag` — valores crudos del micrófono
+- `/piso 12` — piso de ruido del micrófono, por banda (queda guardado). Lo que no lo supera
+  vale cero. Se calibra con `/espectro` en silencio
+- `/diag` — valores crudos del micrófono, más el rango de los últimos ~10 segundos
 - `/trace` — prende/apaga la traza del sonido por el Monitor Serie
 - `/onda` — vuelca 256 muestras crudas del micrófono por el Monitor Serie
 
@@ -241,15 +250,21 @@ Dos formas de resolverlo:
 
 ---
 
+## ✅ Qué está probado en hardware
+
+- **La tira WS2812** (2026-08-13): 21 píxeles, colores correctos a la primera, limitador de
+  corriente verificado y sin interferencia sobre el micrófono.
+- **El análisis de espectro**, con tonos puros: 100 Hz → 78/117 Hz · 1000 Hz → 1012 Hz ·
+  3000 Hz → 2998 Hz. Las tres bandas responden a lo suyo.
+- **Los dos motores del cobertor** giran con `/motor_a` y `/motor_b`, a la velocidad que fija
+  `/velocidad`.
+- **El calentador**: ciclo completo en modo AUTO, calentó y cortó solo.
+
 ## 🚧 Pendiente
 
-- **Tira WS2812**: el código está listo y compila, pero **todavía no se probó en hardware**.
-  El paso a paso para conectarla y probarla está en `CABLEADO-PASO-A-PASO.md`.
-- **Conectar los 2 fines de carrera** del cobertor y verificar que corten el movimiento (con
-  `/status` se comprueba sin mover ningún motor: ver `CABLEADO-PASO-A-PASO.md`).
-- **Montar el mecanismo** (rodillo + cables + lona) y definir el sentido de giro de cada
-  motor; si alguno gira al revés, se invierten sus dos cables en el L298N.
-- **Histéresis del calentador**: son 5 °C, mucho para una pileta. Falta decidir si baja a 2 °C.
+La lista completa, con prioridades y contexto, está en **[`../docs/PENDIENTES.md`](../docs/PENDIENTES.md)**.
+Lo más urgente:
 
-Del cobertor ya está probado lo eléctrico: **los dos motores giran** con `/motor_a` y
-`/motor_b`, a la velocidad que fija `/velocidad`.
+- **Conectar los 2 fines de carrera** del cobertor y verificar que corten el movimiento.
+- **Montar el mecanismo** (rodillo + cables + lona) y definir el sentido de giro de cada motor.
+- **Histéresis del calentador**: son 5 °C, mucho para una pileta. Falta decidir si baja a 2 °C.

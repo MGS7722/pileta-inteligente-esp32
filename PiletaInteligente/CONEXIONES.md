@@ -92,25 +92,29 @@ Micrófono KY-037 (es el ÚNICO micrófono del sistema)
    GND ──── GND
    AO  ──── GPIO34    (salida ANALÓGICA; el DO de este módulo NO se usa)
 
-Tira WS2812 — 15 píxeles (50 cm de una tira de 30 LED/m)
+Tira WS2812 — 21 píxeles (70 cm de una tira de 30 LED/m)
    5V  ──── VIN (5V) del ESP32
    GND ──── GND
    DIN ──── [220Ω]──[220Ω]──── GPIO16     (440Ω en serie, como pide Adafruit)
 ```
 
-- **Un solo cable de datos** maneja los 15 píxeles: cada uno se queda con su color y le pasa
+- **Un solo cable de datos** maneja los 21 píxeles: cada uno se queda con su color y le pasa
   el resto al siguiente. Por eso quedaron libres GPIO17, GPIO14 y GPIO5.
 - **La tira tiene dirección.** El cable de datos entra por el extremo que dice `DIN`, hacia
   donde apuntan las flechas impresas. Al revés no enciende nada (pero no se rompe).
 - **El cable de datos, corto** (20–30 cm): es la causa número uno de fallas al manejar una
   tira de 5V con la lógica de 3,3V del ESP32.
 - **Por qué anda sin adaptador de nivel:** la tira necesita 0,7 × su alimentación para leer un
-  "1". Alimentada desde el `VIN` recibe ~4,7 V (la placa tiene un diodo entre el USB y ese
-  pin), así que el umbral baja a 3,29 V y el 3,3 V del ESP32 alcanza. **Medilo antes de
-  conectar**: si tu placa da 5,0 V clavados, el margen desaparece.
+  "1". Alimentada desde el `VIN` recibe menos de 5 V (la placa tiene un diodo entre el USB y
+  ese pin), así que el umbral baja y el 3,3 V del ESP32 alcanza. **Medido el 2026-08-13: 4,4 V
+  → umbral 3,08 V → 0,22 V de margen.** Cuanto más baja esté esa tensión, mejor anda la señal;
+  si tu placa da 5,0 V clavados, el umbral sube a 3,50 V y el margen desaparece.
 - **Por qué no necesita fuente propia:** el programa lleva un **limitador de corriente**. Antes
   de mandar cada cuadro calcula el consumo y, si se pasa del presupuesto (`/corriente`), baja
-  el brillo hasta que entre. Sin eso, 15 píxeles en blanco pleno pedirían 900 mA.
+  el brillo hasta que entre. Sin eso, 21 píxeles en blanco pleno pedirían 1,3 A.
+- **Verificado en hardware el 2026-08-13**: con la tira encendida, el pico a pico del micrófono
+  NO subió (promedios: 47 con luces apagadas, 38 con luces encendidas) ni con brillo 70 ni con
+  brillo 100. La tira **no** contamina la medición del sonido.
 - ⚠️ Los cables de 5V y GND de la tira van **directo al ESP32**, no por el tramo de protoboard
   donde está el micrófono: los tirones de corriente de la tira entran en el ADC como ruido.
 

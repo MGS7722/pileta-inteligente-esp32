@@ -174,10 +174,19 @@ Son **3 cables**. Este paso reemplaza por completo a los 8 LEDs viejos.
 
 ### 5.1 Preparar la tira
 
-**Cortar 50 cm** (= 15 píxeles en una tira de 30 LED/m). Se corta **por las líneas de cobre**
-que hay entre píxel y píxel, cada 33 mm.
+**Cortar 21 píxeles** (70 cm en una tira de 30 LED/m: la vuelta completa a la pileta, medida
+en el taller el 2026-08-13). Se corta **por las líneas de cobre** que hay entre píxel y píxel,
+cada 33 mm.
 
-> 💡 **Cortá del extremo que ya trae el conector con cables**, así no tenés que soldar nada.
+> 💡 **Contá los píxeles, no midas con la regla.** Si tu tira fuera de 60 LED/m, 70 cm serían
+> 42 píxeles. Lo que el programa necesita saber es la cantidad, y se la decís con `/leds N`.
+>
+> 💡 **Quedate con el pedazo que tiene el conector**, así no tenés que soldar nada: contá 21
+> píxeles desde el conector y cortá en la línea siguiente.
+>
+> 💡 Si esa línea de corte está fea o soldada, **pasá a la siguiente**. El número exacto no
+> importa: `/leds 22` y listo. Lo que **nunca** hay que hacer es cortar por el medio de un
+> píxel.
 
 **Fijate por dónde entran los datos.** La tira tiene dirección: un extremo dice **`DIN`** (o
 `DI`) y el otro **`DO`**. Las **flechas** impresas apuntan hacia donde va la señal. El cable de
@@ -219,7 +228,7 @@ porque la placa tiene un diodo en el medio. A 4,7V el umbral queda en **3,29V** 
 > en orden. Si da 5,0V clavados, tu placa no tiene ese diodo: anda igual pero justo, y si ves
 > parpadeo mirá el plan B del final.
 
-**El del consumo.** 15 píxeles en blanco pleno serían 900 mA, imposible. Por eso **el programa
+**El del consumo.** 21 píxeles en blanco pleno serían 1,3 A, imposible. Por eso **el programa
 lleva un limitador**: antes de mandar cada cuadro calcula lo que va a consumir y, si se pasa del
 presupuesto, baja el brillo hasta que entre. La tira **no puede** pasarse.
 
@@ -386,14 +395,20 @@ motores ni calefactor encima confundiendo el diagnóstico.
 
 | Lectura | Qué significa |
 |---|---|
-| **4,6 – 4,8 V** | ✅ Perfecto. La señal de 3,3V del ESP32 alcanza con margen |
+| **4,2 – 4,8 V** | ✅ Perfecto. La señal de 3,3V del ESP32 alcanza con margen |
 | **5,0 V clavados** | ⚠️ Tu placa no tiene el diodo. Anda igual pero justo: si después ves parpadeo, andá al plan B |
-| **Menos de 4,5 V** | ❌ El USB no está dando bien. Probá otro cable u otro puerto |
+| **Menos de 4,0 V** | ❌ El USB no está dando bien. Probá otro cable u otro puerto |
+
+> 📏 **Medido el 2026-08-13 en la placa real: 4,4 V**, y se mantuvo con las luces encendidas.
+> Cuanto **más baja** esté esa tensión (dentro de lo razonable), **mejor** anda la señal: la
+> tira exige 0,7 × su alimentación, así que a 4,4 V el umbral es 3,08 V y el ESP32, que da
+> 3,3 V, pasa con 0,22 V de margen. A 4,7 V el umbral sería 3,29 V y el margen, apenas 0,01 V.
+> **No cambies el cable USB por uno "mejor" para subir esa tensión: la empeorarías.**
 
 ### 3. Cargar el programa
 
-5. Abrí `PiletaInteligente.ino` y cargalo (**necesita 6 librerías**, ver el README — se sumó
-   *Adafruit NeoPixel*).
+5. Abrí `PiletaInteligente.ino` y cargalo (**necesita 7 librerías**, ver el README — se sumaron
+   *Adafruit NeoPixel* y *arduinoFFT*).
 6. Abrí el **Monitor Serie a 115200**. Lo primero que imprime es **por qué arrancó**:
    - `Motivo del ultimo arranque: encendido normal.` → todo bien.
    - `*** CAIDA DE TENSION (brownout) ***` → la alimentación no alcanzó. Bajá `/corriente`.
@@ -410,12 +425,12 @@ Mirá **dos cosas**:
 |---|---|---|
 | Los 4 colores, en ese orden, en todos los píxeles | ✅ Todo bien | Seguí al punto 9 |
 | Los colores no coinciden (dice ROJO y ves VERDE) | Tu tira usa otro orden de bytes | `/orden` y repetí `/luces_test` |
-| Se encienden menos píxeles de los que cortaste | El programa cree que hay otra cantidad | `/leds 15` (o los que tengas) y repetí |
+| Se encienden menos píxeles de los que cortaste | El programa cree que hay otra cantidad | `/leds 21` (o los que tengas) y repetí |
 | **No enciende nada** | Casi seguro el cable de datos está en `DO` en vez de `DIN` | Dá vuelta la tira |
 | Sólo el primer píxel, o colores al azar | La señal de datos llega mal | Acortá el cable de datos; revisá los 440Ω y el GND |
 | El ESP32 se reinicia | Consumo excesivo | `/corriente 80` y probá de nuevo |
 
-9. Mandá **`/leds 15`** (o la cantidad real que hayas cortado) y repetí `/luces_test` para
+9. Mandá **`/leds 21`** (o la cantidad real que hayas cortado) y repetí `/luces_test` para
    confirmar que responden todos.
 
 ### 5. Verificar que la tira no ensucie el micrófono
@@ -431,10 +446,25 @@ Este es el chequeo que más me importa: la tira y el micrófono comparten el rie
 | El pico a pico casi no cambió | ✅ Perfecto |
 | Subió a más de 60 | ⚠️ La tira está contaminando la medición: pasá sus cables directo al pin `VIN`, separados del micrófono |
 
-### 6. La fiesta
+### 6. Calibrar el piso de ruido (una vez por lugar, 1 minuto)
 
-12. **`/luces_auto`** y poné música.
-13. Probá los cuatro efectos y quedate con el que más te guste:
+Es el único ajuste que depende de dónde esté instalada la pileta: el ruido de fondo de un
+taller con gente hablando no es el de un patio de noche. Sin esto, las bandas sin música se
+llenan con el ruido del micrófono y la tira baila sola.
+
+12. Con el lugar **en silencio**, mandá **`/espectro`** y mirá la columna **CRUDO**.
+13. Mandá **`/piso N`** con un número **un poco por encima del CRUDO más alto** que hayas
+    visto. *(En el taller, en silencio, las tres bandas daban 7,9 – 9,4 → `/piso 12`.)*
+14. Verificá: **`/audio`** en silencio tiene que mostrar las tres bandas en **0 o casi**, y
+    arriba decir **"silencio"**. Si alguna sigue alta, subí el piso de a 2.
+
+> El otro umbral, el de "hay música" (pico a pico 90), está fijo en el código. `/diag` te dice
+> si quedó bien: si el **rango de los últimos 10 segundos** en silencio ya lo supera, avisa solo.
+
+### 7. La fiesta
+
+15. **`/luces_auto`** y poné música.
+16. Probá los cuatro efectos y quedate con el que más te guste:
 
 | Comando | Qué hace |
 |---|---|
@@ -443,17 +473,17 @@ Este es el chequeo que más me importa: la tira y el micrófono comparten el rie
 | `/efecto 3` | **COMETA** — recorre la tira dejando estela y rebota en cada golpe |
 | `/efecto 4` | **ARCOÍRIS** — degradado que gira más rápido cuanto más fuerte suena |
 
-14. Si te parece que reacciona poco o de más, mandá **`/espectro`** con la música sonando: te
+17. Si te parece que reacciona poco o de más, mandá **`/espectro`** con la música sonando: te
     dice el nivel de cada banda, contra qué se está comparando y a partir de qué valor dispara
     los golpes. **`/audio`** te muestra lo mismo en barritas, más rápido de leer.
-15. **`/brillo 90`** si querés más luz (fijate que `/status` te dice cuánta corriente está
+18. **`/brillo 90`** si querés más luz (fijate que `/status` te dice cuánta corriente está
     usando de la que tiene permitida).
 
-### 7. Para afinar después (opcional, con la música sonando)
+### 8. Para afinar después (opcional, con la música sonando)
 
-16. **`/trace`** vuelca por el Monitor Serie todo el análisis, 10 veces por segundo. Dejalo
+19. **`/trace`** vuelca por el Monitor Serie todo el análisis, 10 veces por segundo. Dejalo
     correr un minuto con música y guardá la salida: con esos datos se termina de calibrar.
-17. **`/onda`** vuelca 256 muestras crudas del micrófono. Sirve para verificar la calidad de la
+20. **`/onda`** vuelca 256 muestras crudas del micrófono. Sirve para verificar la calidad de la
     señal y si hay zumbido de la red eléctrica metiéndose.
 
 ---
@@ -536,7 +566,7 @@ conviene acoplar los motores al mecanismo.
 - [ ] **Tira:** ¿el cable de datos es **corto** (20–30 cm)?
 - [ ] **Tira:** ¿sus cables de 5V y GND salen **directo del ESP32**, sin compartir camino con
       el micrófono?
-- [ ] ¿Mediste el **`VIN`** con el multímetro? (esperado 4,6–4,8 V)
+- [ ] ¿Mediste el **`VIN`** con el multímetro? (esperado 4,2–4,8 V; en la placa de Mariano: 4,4 V)
 - [ ] ¿Ningún cable en los pines **SD0, SD1, SD2, SD3, CMD, CLK** (GPIO6–11)? Son de la
       memoria flash: un solo cable ahí y **el ESP32 no arranca**.
 - [ ] ¿Sacaste los **jumpers ENA/ENB** del L298N y **dejaste** el jumper del regulador de 5V?
