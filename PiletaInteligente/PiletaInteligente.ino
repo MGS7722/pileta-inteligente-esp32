@@ -221,9 +221,30 @@ const float BANDA_AGUDOS_HASTA = 5000.0f;
 // banda se normaliza contra SU PROPIO máximo reciente.
 const float AGC_DECAIMIENTO = 0.999f;   // el máximo baja ~8 s si no se renueva
 
-// Piso del AGC: es imprescindible. Sin él, en silencio el AGC amplificaría el
-// ruido de fondo hasta el tope y la tira bailaría sola con el zumbido ambiente.
-// El valor se ve en /espectro, para poder ajustarlo con datos reales.
+// PISO DE RUIDO POR BANDA — el "squelch" que usa WLED.
+//
+// Es la pieza que faltaba, y apareció midiendo en el taller el 2026-08-13: con
+// un tono PURO de 1000 Hz sonando, las tres bandas marcaban 72 / 100 / 100. Las
+// dos bandas donde no había absolutamente nada mostraban el máximo.
+//
+// La culpa no era del AGC sino de cómo se lo usaba. Al normalizar contra el
+// máximo reciente, una banda sin señal ve caer ese máximo hasta el piso, y
+// entonces su propio ruido pasa a valer 100%. Acotar el máximo no alcanza: con
+// un piso de 12 y un ruido de 9, la banda seguiría mostrando 75%. Hay que
+// RESTAR el ruido antes de normalizar, no sólo acotarlo.
+//
+// Medido ese mismo día: en silencio las tres bandas dan 7,9 - 9,4 de crudo; con
+// música fuerte, 18,5 - 24,3. Un piso de 12 deja el ruido en cero y la música
+// prácticamente intacta. Se ajusta desde Telegram con /piso, sin recompilar,
+// porque el ruido de fondo depende de dónde esté instalada la pileta.
+//
+// Lo escribe Telegram (núcleo 0) y lo lee el análisis (núcleo 1), igual que
+// numLeds: en el ESP32 escribir un entero alineado es atómico, así que nunca se
+// lee un valor a medio escribir y no hacen falta candados.
+int pisoRuidoBanda = 12;
+
+// Piso del AGC, ya sobre la señal ÚTIL (lo que quedó por encima del piso de
+// ruido). Evita dividir por casi cero cuando la música arranca de golpe.
 const float AGC_PISO = 5.0f;
 
 // --- Suavizado visual: ataque instantáneo, caída suave ---
@@ -255,10 +276,22 @@ const float FACTOR_MINIMO = 1.15f;
 const unsigned long REFRACTARIO_BEAT_MS = 150;
 const unsigned long DURACION_DESTELLO_MS = 110;   // cuánto dura el flash del golpe
 
-// Umbral de "hay música", en pico a pico crudo del ADC. Calibrado con 116
-// mediciones reales del taller (2026-08-06): silencio 9-36, música 60-130,
-// golpes 250-500. Por debajo de esto la tira pasa a modo respiración.
-const int SONIDO_MINIMO = 45;
+// Umbral de "hay música", en pico a pico crudo del ADC. Por debajo de esto la
+// tira pasa a modo respiración.
+//
+// RECALIBRADO en el taller el 2026-08-13, con la tira ya montada. El valor
+// anterior (45) salía de las mediciones del 2026-08-06, donde el silencio daba
+// 9-36. Con el ruido ambiente real del taller —conversaciones, herramientas— el
+// piso trepa bastante más, y el umbral quedaba POR DEBAJO del ruido: el sistema
+// declaraba "música detectada" sin que sonara nada, y el AGC se alimentaba de
+// ruido. Medido ese día, 15 lecturas alternadas:
+//
+//   ruido ambiente (conversaciones) ...  32 - 56
+//   música por un parlante ........... 180 - 591
+//
+// 90 es casi el doble del ruido máximo y la mitad de la música más floja: deja
+// margen limpio de los dos lados.
+const int SONIDO_MINIMO = 90;
 
 // Memoria de "hay música": evita que la tira se apague entre dos beats.
 const unsigned long MEMORIA_MUSICA_MS = 800;
@@ -344,17 +377,37 @@ int   ultimoMaximo    = 0;
 int   ultimoDC        = 0;    // punto de polarización del micrófono
 float frecuenciaRealHz = FRECUENCIA_MUESTREO_NOMINAL;   // medida, no supuesta
 
+// --- Seguimiento del pico a pico en una ventana de varios segundos ---
+//
+// Cada lectura de /diag es una foto de 25,6 ms: en el taller salta entre 32 y 56
+// de una medición a la siguiente, porque el ruido ambiente realmente es así.
+// Estimar un piso de ruido con fotos sueltas costó quince mandadas de /diag;
+// con esto se hace de una.
+//
+// Son dos ventanas: la que está corriendo y la anterior ya cerrada. /diag
+// informa el mínimo y el máximo de las dos juntas, así que siempre mira entre 5
+// y 10 segundos de historia y nunca arranca de cero justo cuando se lo consulta.
+const unsigned long VENTANA_P2P_MS = 5000;
+int p2pMinimoActual = 4095;
+int p2pMaximoActual = 0;
+int p2pMinimoPrevio = 4095;
+int p2pMaximoPrevio = 0;
+unsigned long inicioVentanaP2p = 0;
+
 // --- Las tres bandas del espectro ---
-// `crudo` es lo que sale de la FFT; `maximoAgc` es la referencia con la que se
-// normaliza; `nivel` es el valor final de 0 a 1 que usan los efectos.
+//
+// La señal pasa por tres etapas y cada una queda guardada, porque /espectro las
+// muestra todas: sin ver el crudo al lado del útil no hay forma de calibrar el
+// piso de ruido en el taller.
 struct Banda {
-  float crudo;
-  float maximoAgc;
-  float nivel;
+  float crudo;       // lo que sale de la FFT, sin tocar
+  float util;        // crudo menos el piso de ruido, nunca negativo
+  float maximoAgc;   // referencia del AGC, en la escala de `util`
+  float nivel;       // 0 a 1: lo que dibujan los efectos
 };
-Banda graves = {0, AGC_PISO, 0};
-Banda medios = {0, AGC_PISO, 0};
-Banda agudos = {0, AGC_PISO, 0};
+Banda graves = {0, 0, AGC_PISO, 0};
+Banda medios = {0, 0, AGC_PISO, 0};
+Banda agudos = {0, 0, AGC_PISO, 0};
 
 float volumenGeneral = 0.0f;   // 0 a 1, promedio de las tres bandas ya normalizadas
 float frecuenciaDominanteHz = 0.0f;
@@ -493,6 +546,7 @@ void setup() {
   corrienteMaximaMa = preferencias.getUShort("corriente", corrienteMaximaMa);
   efectoActual      = preferencias.getUChar("efecto", efectoActual);
   tiraEsGRB         = preferencias.getBool("tiraGRB", tiraEsGRB);
+  pisoRuidoBanda    = preferencias.getUChar("pisoRuido", pisoRuidoBanda);
 
   // Los valores guardados podrían venir de una versión anterior con otros
   // rangos: se acotan antes de usarlos, para que un número absurdo en memoria
@@ -501,6 +555,7 @@ void setup() {
   brilloPorcentaje  = constrain(brilloPorcentaje, 0, 100);
   corrienteMaximaMa = constrain(corrienteMaximaMa, 50, 2000);
   efectoActual      = constrain(efectoActual, EFECTO_MINIMO, EFECTO_MAXIMO);
+  pisoRuidoBanda    = constrain(pisoRuidoBanda, 0, 200);
 
   // Tira de luces (arranca APAGADA; se activa desde Telegram)
   tira.begin();
@@ -795,6 +850,25 @@ void capturarMuestras() {
   ultimoMaximo    = maximo;
   ultimoPicoAPico = maximo - minimo;
   ultimoDC        = (int)(suma / MUESTRAS_FFT);
+
+  seguirPicoAPico();
+}
+
+// Lleva el mínimo y el máximo del pico a pico de los últimos segundos, para que
+// /diag pueda mostrar un rango y no una sola foto instantánea (ver la
+// declaración de las variables). Cuando la ventana en curso cumple su tiempo,
+// pasa a ser "la anterior" y empieza una nueva.
+void seguirPicoAPico() {
+  if (ultimoPicoAPico < p2pMinimoActual) p2pMinimoActual = ultimoPicoAPico;
+  if (ultimoPicoAPico > p2pMaximoActual) p2pMaximoActual = ultimoPicoAPico;
+
+  if (millis() - inicioVentanaP2p >= VENTANA_P2P_MS) {
+    p2pMinimoPrevio  = p2pMinimoActual;
+    p2pMaximoPrevio  = p2pMaximoActual;
+    p2pMinimoActual  = 4095;
+    p2pMaximoActual  = 0;
+    inicioVentanaP2p = millis();
+  }
 }
 
 // Convierte las muestras en un espectro: al salir, vReal[i] es la magnitud de la
@@ -834,24 +908,36 @@ float energiaDeBanda(float desdeHz, float hastaHz) {
   return sqrtf(suma / (float)(ultimoBin - primerBin + 1));
 }
 
-// Control automático de ganancia, uno por banda.
+// Puerta de ruido + control automático de ganancia, uno por banda.
 //
-// Sin esto el sistema anda con un volumen y con otro no. Y hay un problema
-// extra: en música real los graves son 10 o 20 veces más fuertes que los agudos,
-// así que con una escala común la banda de agudos quedaría siempre apagada. Cada
-// banda se mide contra SU PROPIO máximo reciente y termina yendo de 0 a 1.
+// El AGC existe porque sin él el sistema anda con un volumen y no con otro, y
+// porque en música real los graves son 10 o 20 veces más fuertes que los agudos:
+// con una escala común la banda de agudos quedaría siempre apagada. Cada banda
+// se mide contra SU PROPIO máximo reciente y termina yendo de 0 a 1.
+//
+// Pero el AGC solo tiene un defecto fatal, verificado en el taller: amplifica el
+// silencio. Una banda sin señal ve caer su máximo hasta el piso y su propio
+// ruido pasa a valer 100% — con un tono puro de 1000 Hz, las bandas de graves y
+// agudos marcaban el máximo teniendo cero contenido.
+//
+// Por eso el AGC no trabaja sobre el crudo sino sobre la señal ÚTIL: lo que
+// queda DESPUÉS de restarle el piso de ruido. Lo que no supera ese piso no es
+// música, es el ruido propio del micrófono y del ADC, y vale exactamente cero.
 void normalizarBanda(Banda &banda) {
-  if (banda.crudo > banda.maximoAgc) {
-    banda.maximoAgc = banda.crudo;          // sube al instante
+  banda.util = banda.crudo - (float)pisoRuidoBanda;
+  if (banda.util < 0.0f) banda.util = 0.0f;
+
+  if (banda.util > banda.maximoAgc) {
+    banda.maximoAgc = banda.util;           // sube al instante
   } else {
     banda.maximoAgc *= AGC_DECAIMIENTO;     // baja de a poco
   }
 
-  // El piso es imprescindible: sin él, en silencio el AGC amplifica el ruido de
-  // fondo hasta el tope y la tira baila sola con el zumbido del ambiente.
+  // Sin este tope inferior, la primera nota después de un silencio se dividiría
+  // por un máximo casi nulo y saltaría al 100% de golpe.
   if (banda.maximoAgc < AGC_PISO) banda.maximoAgc = AGC_PISO;
 
-  float objetivo = constrain(banda.crudo / banda.maximoAgc, 0.0f, 1.0f);
+  float objetivo = constrain(banda.util / banda.maximoAgc, 0.0f, 1.0f);
 
   // Ataque instantáneo, caída suave: el golpe se ve YA, y se apaga con
   // elegancia. Sin esto, a 35 cuadros por segundo la tira parpadea feo.
@@ -880,9 +966,14 @@ float calcularFrecuenciaDominante() {
 // Detección de golpes por energía sonora.
 //
 // El beat NO sale de la FFT: sale de comparar la energía instantánea de los
-// GRAVES contra el promedio del último segundo. Se usa la energía CRUDA y no la
+// GRAVES contra el promedio del último segundo. Se usa la energía ÚTIL y no la
 // normalizada, porque el AGC justamente borra la información de "este golpe es
 // más fuerte que el promedio", que es la que hace falta acá.
+//
+// Que sea la ÚTIL y no la cruda importa: el piso de ruido es un valor constante
+// que se suma por igual al golpe y al promedio, y achata el contraste entre los
+// dos. Descontándolo, la relación golpe/promedio crece y los golpes flojos que
+// antes quedaban justo debajo del umbral ahora se detectan.
 void detectarBeat() {
   hayBeat = false;
 
@@ -913,7 +1004,7 @@ void detectarBeat() {
     umbralBeat = promedioGraves * factor;
 
     unsigned long ahora = millis();
-    if (hayMusica && graves.crudo > umbralBeat &&
+    if (hayMusica && graves.util > umbralBeat &&
         (ahora - ultimoBeat) >= REFRACTARIO_BEAT_MS) {
       hayBeat        = true;
       ultimoBeat     = ahora;
@@ -923,7 +1014,7 @@ void detectarBeat() {
 
   // Recién ahora entra al historial: si entrara antes, el golpe se estaría
   // comparando contra un promedio que ya lo incluye y se taparía a sí mismo.
-  historialGraves[posHistorial] = graves.crudo;
+  historialGraves[posHistorial] = graves.util;
   posHistorial++;
   if (posHistorial >= HISTORIAL_BEAT) {
     posHistorial   = 0;
@@ -944,6 +1035,8 @@ void emitirTrazaSonido() {
   Serial.print(" graves=");    Serial.print(graves.crudo, 1);
   Serial.print(" medios=");    Serial.print(medios.crudo, 1);
   Serial.print(" agudos=");    Serial.print(agudos.crudo, 1);
+  Serial.print(" utilGraves="); Serial.print(graves.util, 1);
+  Serial.print(" piso=");      Serial.print(pisoRuidoBanda);
   Serial.print(" promGraves="); Serial.print(promedioGraves, 1);
   Serial.print(" umbral=");    Serial.print(umbralBeat, 1);
   Serial.print(" beat=");      Serial.print(hayBeat ? 1 : 0);
@@ -1740,6 +1833,33 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
                                " mA. Guardado.\n" + consejoDeCorriente(), "");
     }
   }
+  // El piso de ruido depende del lugar donde esté instalada la pileta, no del
+  // programa: un taller con gente hablando y un patio de noche no tienen el
+  // mismo ruido de fondo. Por eso se calibra desde Telegram y queda guardado.
+  else if (text.startsWith("/piso")) {
+    String arg = text.substring(5);
+    arg.trim();
+    int valor = arg.toInt();
+
+    if (arg.length() == 0) {
+      bot.sendMessage(chat_id,
+        "Piso de ruido por banda: " + String(pisoRuidoBanda) + "\n\n"
+        "Lo que no supera este valor no cuenta como sonido: es el ruido del\n"
+        "microfono y del ambiente, y vale cero.\n\n"
+        "Para calibrarlo: mandá /espectro EN SILENCIO y poné el piso un poco\n"
+        "por encima del CRUDO mas alto que veas.\n"
+        "Para cambiarlo: /piso 12", "");
+    } else if (valor < 0 || valor > 200) {
+      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 0 y 200.", "");
+    } else {
+      pisoRuidoBanda = valor;
+      preferencias.putUChar("pisoRuido", (uint8_t)pisoRuidoBanda);
+      bot.sendMessage(chat_id, "Piso de ruido por banda: " + String(pisoRuidoBanda) +
+                               ". Guardado.\n"
+                               "La ganancia automatica se reacomoda en unos segundos.\n"
+                               "Verificalo con /espectro.", "");
+    }
+  }
 
   // --- Calentador ---
   else if (text == "/calentador_auto") {
@@ -1909,9 +2029,10 @@ String armarAyuda(String from_name) {
   s += "/audio - volumen y bandas en vivo\n";
   s += "/espectro - detalle del análisis de frecuencias\n\n";
   s += "AJUSTES FINOS (taller):\n";
-  s += "/leds 15 - cuántos pixeles tiene la tira\n";
+  s += "/leds 21 - cuántos pixeles tiene la tira\n";
   s += "/corriente 120 - presupuesto de corriente (mA)\n";
   s += "/orden - invertir el orden de colores (GRB/RGB)\n";
+  s += "/piso 12 - piso de ruido del microfono\n";
   s += "/diag - diagnostico del microfono\n";
   s += "/trace - traza del sonido por Monitor Serie\n";
   s += "/onda - volcar la onda cruda por Monitor Serie\n";
@@ -2020,6 +2141,22 @@ String armarDiagnosticoMicrofono() {
   s += "Punto de reposo (DC): " + String(ultimoDC) + "\n";
   s += "Muestreo real: " + String(frecuenciaRealHz, 0) + " Hz\n\n";
 
+  // Una sola ventana son 25,6 ms: una foto. Para calibrar hace falta el rango
+  // de un rato, que es lo que dice si el umbral de musica esta bien puesto.
+  int rangoMinimo = min(p2pMinimoActual, p2pMinimoPrevio);
+  int rangoMaximo = max(p2pMaximoActual, p2pMaximoPrevio);
+
+  s += "ULTIMOS ~10 SEGUNDOS\n";
+  s += "  Pico a pico: entre " + String(rangoMinimo) + " y " + String(rangoMaximo) + "\n";
+  s += "  Umbral de \"hay musica\": " + String(SONIDO_MINIMO) + " -> ahora: ";
+  s += (hayMusica ? "musica detectada" : "silencio");
+  s += "\n";
+  if (rangoMaximo >= SONIDO_MINIMO && rangoMinimo >= SONIDO_MINIMO) {
+    s += "  OJO: el minimo del rango ya supera el umbral. Si no hay musica\n";
+    s += "  sonando, el ruido de fondo del lugar es mas alto que el umbral.\n";
+  }
+  s += "\n";
+
   if (ultimoPicoAPico < 20) {
     s += "=> Senal MUY DEBIL o nula. El sensor casi no esta captando.\n";
   } else if (ultimoPicoAPico < 100) {
@@ -2076,13 +2213,13 @@ String armarEspectro() {
        String(frecuenciaRealHz, 0) + " Hz\n";
   s += "Resolucion: " + String(frecuenciaRealHz / MUESTRAS_FFT, 1) + " Hz por banda\n\n";
 
-  s += "BANDA      CRUDO   TOPE   NIVEL\n";
-  s += "Graves  " + String(graves.crudo, 1) + "   " + String(graves.maximoAgc, 1) +
-       "   " + String((int)(graves.nivel * 100)) + "%\n";
-  s += "Medios  " + String(medios.crudo, 1) + "   " + String(medios.maximoAgc, 1) +
-       "   " + String((int)(medios.nivel * 100)) + "%\n";
-  s += "Agudos  " + String(agudos.crudo, 1) + "   " + String(agudos.maximoAgc, 1) +
-       "   " + String((int)(agudos.nivel * 100)) + "%\n\n";
+  s += "Piso de ruido por banda: " + String(pisoRuidoBanda) + "  (se ajusta con /piso)\n\n";
+
+  s += "BANDA    CRUDO   UTIL   TOPE  NIVEL\n";
+  s += lineaDeBanda("Graves", graves);
+  s += lineaDeBanda("Medios", medios);
+  s += lineaDeBanda("Agudos", agudos);
+  s += "\n";
 
   s += "GOLPES (sobre los graves):\n";
   s += "  Promedio del ultimo segundo: " + String(promedioGraves, 1) + "\n";
@@ -2094,10 +2231,25 @@ String armarEspectro() {
     s += "  silencio, el microfono esta captando ruido de la fuente.\n";
   }
 
-  s += "\nEl 'TOPE' es la referencia del control automatico de ganancia: cada\n";
-  s += "banda se normaliza contra su propio maximo reciente, para que los\n";
-  s += "agudos (siempre mas debiles) se vean igual que los graves.";
+  s += "\nCRUDO es lo que sale de la FFT. UTIL es lo que queda despues de\n";
+  s += "restarle el piso de ruido: lo que no lo supera NO es musica, es el\n";
+  s += "ruido del microfono, y vale cero. TOPE es la referencia del control\n";
+  s += "automatico de ganancia, que mide cada banda contra su propio maximo\n";
+  s += "reciente para que los agudos (siempre mas debiles) se vean igual que\n";
+  s += "los graves.\n\n";
+  s += "Para calibrar el piso: mandá /espectro EN SILENCIO y poné /piso un\n";
+  s += "poco por encima del CRUDO mas alto que veas. Asi el silencio queda en\n";
+  s += "cero y la musica sigue entrando entera.";
   return s;
+}
+
+// Una fila de la tabla de /espectro. Aparte para que las tres salgan iguales y
+// no haya tres copias de la misma concatenación con un typo en alguna.
+String lineaDeBanda(const char *nombre, const Banda &banda) {
+  return String(nombre) + "  " + String(banda.crudo, 1) +
+         "   " + String(banda.util, 1) +
+         "   " + String(banda.maximoAgc, 1) +
+         "   " + String((int)(banda.nivel * 100)) + "%\n";
 }
 
 String modoCalentadorTexto() {
