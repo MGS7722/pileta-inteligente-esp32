@@ -8,6 +8,28 @@
 
 ---
 
+## v5.6 — 2026-08-20 · Una velocidad para cada motor
+
+### Agregado
+- **`/velocidad_a` y `/velocidad_b`**: cada motor tiene ahora su propia velocidad, guardada en la
+  memoria del ESP32. El motivo es mecánico y estaba previsto en `docs/PENDIENTES.md` #7d: el hilo
+  va pasando de un carrete al otro, así que el que suelta y el que recoge no tienen el mismo
+  diámetro, y al mismo PWM uno termina arrastrando al otro. Bajarle la velocidad a uno compensa
+  esa diferencia.
+- **`/velocidad` sigue existiendo y ahora pone las DOS**, que es lo habitual: se calibra parejo y
+  después se retoca el que haga falta. Sin argumento, los tres comandos informan cómo está cada
+  motor.
+- `/status` muestra las dos velocidades por separado (`A 45% | B 35%`), y el Monitor Serie informa
+  las dos al terminar la patada de arranque.
+
+### Ojo al actualizar
+- **La calibración anterior NO se pierde.** Al arrancar, el valor viejo (`velCobertor`) se lee
+  primero y sirve de punto de partida para los dos motores; si además ya hay valores por motor,
+  esos mandan.
+- El piso del 20 % sigue valiendo para los dos: por debajo, el motor zumba y no llega a girar.
+
+---
+
 ## v5.5 — 2026-08-20 · El envío de Telegram deja de ser de la librería, y la pantalla se cura sola
 
 Dos problemas distintos de la misma tarde de taller, los dos de raíz.

@@ -320,10 +320,14 @@ const unsigned long MEMORIA_MUSICA_MS = 800;
 //   AJUSTES DEL COBERTOR
 // ============================================================
 
-// Velocidad de los motores, en PWM de 0 a 255. Se ajusta desde Telegram con
-// /velocidad (en porcentaje) y queda guardada en la memoria del ESP32, así se
-// calibra en el taller sin recompilar. 115 (~45%) es el valor de fábrica.
-int velocidadCobertor = 115;
+// Velocidad de fábrica de cada motor, en PWM de 0 a 255. 115 es ~45 %.
+//
+// Ya no hay UNA velocidad: cada motor tiene la suya (ver la estructura Motor).
+// El motivo es mecánico y estaba previsto en docs/PENDIENTES.md #7d: el hilo va
+// pasando de un carrete al otro, así que el que suelta y el que recoge no tienen
+// el mismo diámetro, y al mismo PWM uno arrastra al otro. Poder bajarle la
+// velocidad a uno de los dos es lo que compensa esa diferencia.
+const int VELOCIDAD_DE_FABRICA = 115;
 
 // Piso físico: por debajo de ~20% el motor no vence su propio rozamiento, zumba
 // y no llega a girar. No es un problema del programa, es el motor.
@@ -387,11 +391,18 @@ struct Motor {
   const uint8_t pinEntrada1;
   const uint8_t pinEntrada2;
   const uint8_t pinHabilitacion;   // el que lleva el PWM
-  const char    nombre;            // 'A' o 'B', sólo para los mensajes
+  const char    nombre;            // 'A' o 'B', para los mensajes y la clave en NVS
+
+  // PWM de régimen PROPIO de este motor, 0-255, guardado en NVS. Lo escribe
+  // Telegram (núcleo 0) y lo lee el movimiento (núcleo 1); como con numLeds, en
+  // el ESP32 escribir un entero alineado es atómico, así que nunca se lee un
+  // valor a medio escribir. Lo peor que puede pasar es que un cambio se note
+  // recién en el movimiento siguiente.
+  int           velocidad;
 };
 
-Motor motorA = { MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_EN, 'A' };
-Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B' };
+Motor motorA = { MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_EN, 'A', VELOCIDAD_DE_FABRICA };
+Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B', VELOCIDAD_DE_FABRICA };
 
 // --- Dos sistemas de sentido, SEPARADOS y sin pisarse ---
 //
@@ -719,7 +730,6 @@ void setup() {
   // Configuración guardada (si nunca se configuró, quedan los valores de fábrica)
   preferencias.begin("pileta", false);
   tempObjetivo      = preferencias.getFloat("tempObj", tempObjetivo);
-  velocidadCobertor = preferencias.getUChar("velCobertor", velocidadCobertor);
   numLeds           = preferencias.getUShort("numLeds", numLeds);
   brilloPorcentaje  = preferencias.getUChar("brillo", brilloPorcentaje);
   corrienteMaximaMa = preferencias.getUShort("corriente", corrienteMaximaMa);
@@ -732,6 +742,14 @@ void setup() {
   pruebaAInvertida  = preferencias.getBool("pruebaAInv", pruebaAInvertida);
   pruebaBInvertida  = preferencias.getBool("pruebaBInv", pruebaBInvertida);
 
+  // La velocidad pasó de ser UNA a ser una por motor (2026-08-20). El valor
+  // viejo se lee primero y sirve de punto de partida para los dos, así una
+  // calibración hecha antes de este cambio NO se pierde al actualizar. Si además
+  // ya hay valores por motor, esos mandan.
+  const int velocidadGuardadaVieja = preferencias.getUChar("velCobertor", VELOCIDAD_DE_FABRICA);
+  motorA.velocidad = preferencias.getUChar("velMotorA", velocidadGuardadaVieja);
+  motorB.velocidad = preferencias.getUChar("velMotorB", velocidadGuardadaVieja);
+
   // Los valores guardados podrían venir de una versión anterior con otros
   // rangos: se acotan antes de usarlos, para que un número absurdo en memoria
   // no deje la tira sin arrancar.
@@ -742,6 +760,8 @@ void setup() {
   pisoRuidoBanda    = constrain(pisoRuidoBanda, 0, 200);
   tiempoAbrirDecimas  = constrain(tiempoAbrirDecimas,  TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
   tiempoCerrarDecimas = constrain(tiempoCerrarDecimas, TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
+  motorA.velocidad    = constrain(motorA.velocidad, pwmDeVelocidadMinima(), 255);
+  motorB.velocidad    = constrain(motorB.velocidad, pwmDeVelocidadMinima(), 255);
 
   // Tira de luces (arranca APAGADA; se activa desde Telegram)
   tira.begin();
@@ -1725,8 +1745,37 @@ bool finDeCarreraTocado(int pin) {
 
 // La velocidad se guarda en PWM (0-255) porque es lo que entiende el L298N, pero
 // se muestra y se pide en porcentaje, que es lo que entiende cualquiera.
-int velocidadPorcentaje() {
-  return (velocidadCobertor * 100) / 255;
+int velocidadPorcentaje(const Motor &motor) {
+  return (motor.velocidad * 100) / 255;
+}
+
+// El piso de 20 % expresado en PWM. Se calcula acá una sola vez para que el
+// comando y la validación del arranque no puedan quedar con criterios distintos.
+int pwmDeVelocidadMinima() {
+  return (VELOCIDAD_MINIMA_PORCENTAJE * 255) / 100;
+}
+
+// Guarda la velocidad de UN motor, en el motor y en la memoria del ESP32. La
+// clave sale de su nombre ('A' o 'B'), así no hay dos listas que mantener en
+// sincronía ni forma de guardar lo de un motor bajo la clave del otro.
+void guardarVelocidad(Motor &motor, int porcentaje) {
+  motor.velocidad = (porcentaje * 255) / 100;
+
+  char clave[12];
+  snprintf(clave, sizeof(clave), "velMotor%c", motor.nombre);
+  preferencias.putUChar(clave, (uint8_t)motor.velocidad);
+}
+
+// El mismo texto de error para los tres comandos de velocidad: una sola regla,
+// imposible que digan cosas distintas.
+String textoVelocidadInvalida(const String &ejemplo) {
+  return "Valor invalido: usa un numero entre " + String(VELOCIDAD_MINIMA_PORCENTAJE) +
+         " y 100. Ej: " + ejemplo + "\nPor debajo de " + String(VELOCIDAD_MINIMA_PORCENTAJE) +
+         "% el motor zumba pero no llega a girar.";
+}
+
+bool velocidadValida(int porcentaje) {
+  return porcentaje >= VELOCIDAD_MINIMA_PORCENTAJE && porcentaje <= 100;
 }
 
 // --- Control de un motor -------------------------------------------------
@@ -1795,10 +1844,13 @@ void cobertorFrenar() {
 // girar arrastrado.
 void aplicarVelocidadDeRegimen() {
   if (estadoCobertor == COB_PRUEBA) {
-    motorCambiarVelocidad(motorEnPrueba == 'A' ? motorA : motorB, velocidadCobertor);
+    Motor &motor = (motorEnPrueba == 'A') ? motorA : motorB;
+    motorCambiarVelocidad(motor, motor.velocidad);
   } else {
-    motorCambiarVelocidad(motorA, velocidadCobertor);
-    motorCambiarVelocidad(motorB, velocidadCobertor);
+    // Cada uno baja a LA SUYA. Es el punto del cambio: con el hilo pasando de un
+    // carrete al otro, los dos al mismo PWM hacen que uno arrastre al otro.
+    motorCambiarVelocidad(motorA, motorA.velocidad);
+    motorCambiarVelocidad(motorB, motorB.velocidad);
   }
 }
 
@@ -1910,11 +1962,11 @@ void actualizarCobertor() {
   if (arranqueEnCurso && millis() - inicioMovimientoCobertor >= ARRANQUE_MS) {
     aplicarVelocidadDeRegimen();
     arranqueEnCurso = false;
-    Serial.print(">>> Fin de la patada de arranque: PWM baja a ");
-    Serial.print(velocidadCobertor);
-    Serial.print(" (");
-    Serial.print(velocidadPorcentaje());
-    Serial.println("%)");
+    Serial.print(">>> Fin de la patada de arranque: motor A a ");
+    Serial.print(velocidadPorcentaje(motorA));
+    Serial.print("% | motor B a ");
+    Serial.print(velocidadPorcentaje(motorB));
+    Serial.println("%");
   }
 
   // UN SOLO corte por tiempo para los tres movimientos.
@@ -2633,23 +2685,51 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
                               " C. Guardada: sobrevive reinicios.");
     }
   }
+  // Velocidad de UN motor. ⚠️ Va OBLIGATORIAMENTE antes de /velocidad: el
+  // despacho usa startsWith(), así que si /velocidad se evaluara primero también
+  // se quedaría con /velocidad_a y le pasaría "_a 50" a toInt(), que da 0.
+  else if (text.startsWith("/velocidad_a") || text.startsWith("/velocidad_b")) {
+    Motor &motor = text.startsWith("/velocidad_a") ? motorA : motorB;
+    const String comando = String("/velocidad_") + (char)tolower(motor.nombre);
+
+    String arg = text.substring(comando.length());
+    arg.trim();
+    const int porcentaje = arg.toInt();
+
+    if (arg.length() == 0) {
+      telegramEnviar(chat_id, String("Velocidad del motor ") + motor.nombre + ": " +
+                              String(velocidadPorcentaje(motor)) + "%.\nPara cambiarla: " +
+                              comando + " 40");
+    } else if (!velocidadValida(porcentaje)) {
+      telegramEnviar(chat_id, textoVelocidadInvalida(comando + " 40"));
+    } else {
+      guardarVelocidad(motor, porcentaje);
+      telegramEnviar(chat_id, String("Velocidad del motor ") + motor.nombre + ": " +
+                              String(porcentaje) + "%. Guardada: sobrevive reinicios.\n"
+                              "Ahora: A " + String(velocidadPorcentaje(motorA)) + "% | B " +
+                              String(velocidadPorcentaje(motorB)) + "%.\n"
+                              "Probala con /motor_" + (char)tolower(motor.nombre) + ".");
+    }
+  }
+  // Velocidad de LOS DOS a la vez, que es lo habitual: se calibra parejo y
+  // después, si el hilo pide que uno vaya más despacio, se retoca ese solo.
   else if (text.startsWith("/velocidad")) {
     String arg = text.substring(10);   // lo que viene después de "/velocidad"
     arg.trim();
-    int porcentaje = arg.toInt();
+    const int porcentaje = arg.toInt();
 
     if (arg.length() == 0) {
-      telegramEnviar(chat_id, "Velocidad de los motores: " + String(velocidadPorcentaje()) +
-                              "%.\nPara cambiarla: /velocidad 35");
-    } else if (porcentaje < VELOCIDAD_MINIMA_PORCENTAJE || porcentaje > 100) {
-      telegramEnviar(chat_id, "Valor invalido: usa un numero entre " +
-                              String(VELOCIDAD_MINIMA_PORCENTAJE) + " y 100. Ej: /velocidad 35\n"
-                              "Por debajo de " + String(VELOCIDAD_MINIMA_PORCENTAJE) +
-                              "% el motor zumba pero no llega a girar.");
+      telegramEnviar(chat_id, "Velocidad de los motores:\n"
+                              "Motor A: " + String(velocidadPorcentaje(motorA)) + "%\n"
+                              "Motor B: " + String(velocidadPorcentaje(motorB)) + "%\n\n"
+                              "Los dos juntos: /velocidad 35\n"
+                              "Uno solo: /velocidad_a 40 o /velocidad_b 30");
+    } else if (!velocidadValida(porcentaje)) {
+      telegramEnviar(chat_id, textoVelocidadInvalida("/velocidad 35"));
     } else {
-      velocidadCobertor = (porcentaje * 255) / 100;
-      preferencias.putUChar("velCobertor", (uint8_t)velocidadCobertor);
-      telegramEnviar(chat_id, "Velocidad de los motores: " + String(porcentaje) +
+      guardarVelocidad(motorA, porcentaje);
+      guardarVelocidad(motorB, porcentaje);
+      telegramEnviar(chat_id, "Velocidad de los DOS motores: " + String(porcentaje) +
                               "%. Guardada: sobrevive reinicios.\n"
                               "Probala con /motor_a o /motor_b.");
     }
@@ -2797,7 +2877,8 @@ String armarAyudaControl(String from_name) {
   s += "/cobertor_parar - frenar el cobertor\n";
   s += "/tiempo_abrir 8 - cuantos segundos dura el abrir\n";
   s += "/tiempo_cerrar 8 - cuantos segundos dura el cerrar\n";
-  s += "/velocidad 35 - que tan rapido se mueven los motores (%)\n";
+  s += "/velocidad 35 - que tan rapido se mueven los DOS motores (%)\n";
+  s += "/velocidad_a 40, /velocidad_b 30 - la de UN motor solo\n";
   s += "/motor_a 5 - probar un motor solo N segundos (taller)\n";
   s += "/cobertor_sentido - invertir el sentido del cobertor\n";
   s += "/sentido_a, /sentido_b - invertir el giro de esa PRUEBA\n\n";
@@ -2890,7 +2971,8 @@ String armarStatus() {
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
   s += "Tiempos: abrir " + segundosTexto(tiempoAbrirDecimas) + " s | cerrar " +
        segundosTexto(tiempoCerrarDecimas) + " s\n";
-  s += "Velocidad motores: " + String(velocidadPorcentaje()) + "%\n";
+  s += "Velocidad motores: A " + String(velocidadPorcentaje(motorA)) + "% | B " +
+       String(velocidadPorcentaje(motorB)) + "%\n";
   s += "Cobertor al ABRIR: los 2 motores " + giroTexto(sentidoDelCobertor(true)) + "\n";
   s += "Pruebas: motor A " + giroTexto(sentidoDeLaPrueba('A')) +
        " | motor B " + giroTexto(sentidoDeLaPrueba('B')) + "\n";

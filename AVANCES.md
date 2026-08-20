@@ -914,3 +914,38 @@ bot conteste rápido.
   API real de Telegram), envío propio, diagnóstico del LCD por la foto y el reenganche de nibbles,
   carga del firmware y documentación.
 
+### Sesión 2026-08-20 (parte 3) — Una velocidad para cada motor
+
+Probando el cobertor con la lona puesta, Mariano necesitó poder darle **una velocidad distinta a
+cada motor**. No es un capricho: es exactamente el problema anotado en `docs/PENDIENTES.md` #7d
+desde el 13 de agosto. El hilo va pasando de un carrete al otro, así que el que suelta y el que
+recoge no tienen el mismo diámetro; con los dos al mismo PWM, uno termina arrastrando al otro.
+
+**Lo que había que cuidar para no romper nada**, que era el pedido explícito:
+
+1. **El despacho de comandos usa `startsWith()`**, así que `/velocidad_a` también hace match con
+   `/velocidad`. Si quedaran en ese orden, `/velocidad_a 50` le pasaría `"_a 50"` a `toInt()`, que
+   devuelve 0, y el comando se rechazaría con un mensaje incomprensible. Los comandos por motor van
+   **antes** que el general, con el porqué escrito al lado para que nadie los reordene.
+2. **La calibración guardada no se podía perder.** Al arrancar se lee primero la clave vieja
+   (`velCobertor`) y se usa como punto de partida de los dos motores; si además existen las claves
+   por motor, esas mandan.
+3. **Una sola regla de validación.** Los tres comandos comparten `velocidadValida()` y
+   `textoVelocidadInvalida()`, así que es imposible que uno acepte lo que otro rechaza — el mismo
+   criterio que llevó a unificar los motores en una sola estructura el 13 de agosto.
+4. **La clave de NVS sale del nombre del motor** (`velMotor%c`), no de una lista aparte: no hay dos
+   cosas que mantener en sincronía ni forma de guardar lo de un motor bajo la clave del otro.
+
+La velocidad pasó a vivir **dentro de la estructura `Motor`**, donde ya viven sus pines. El global
+`velocidadCobertor` desapareció y no quedó ninguna referencia suelta (verificado con `grep`).
+
+**Gate**: compilado y cargado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de flash
+y 16 % de RAM**, `Hash of data verified`.
+
+**Falta la parte de campo**: encontrar con la lona puesta qué par de valores deja el hilo parejo de
+punta a punta. La herramienta ya está; el número lo da la pileta.
+
+#### Atribución por modelo (sesión 2026-08-20, parte 3)
+- **Opus 5**: velocidad por motor, revisión de conflictos con el despacho de comandos y la
+  migración de NVS, carga del firmware y documentación.
+

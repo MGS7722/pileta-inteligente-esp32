@@ -58,7 +58,7 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Prueba de taller: /motor_a, /motor_b (mueven un motor solo; `/motor_a 5` para elegir los
   segundos, 2 por omisión)
 - Efectos de luces: /efecto 1 (espectro) | 2 (mezcla) | 3 (cometa) | 4 (arcoíris)
-- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (motores, en %), /tiempo_abrir 4.5 y
+- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (los dos motores, en %), /velocidad_a 40 y /velocidad_b 30 (uno solo), /tiempo_abrir 4.5 y
   /tiempo_cerrar 5 (duración del recorrido, admite decimales), /cobertor_sentido (invertir el
   cobertor), /sentido_a y /sentido_b (invertir sólo esa prueba), /brillo 70, /leds 21,
   /corriente 120, /orden, /piso 12 — todos guardados en NVS
