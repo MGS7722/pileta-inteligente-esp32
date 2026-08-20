@@ -1,7 +1,7 @@
 # 📌 Pendientes — Pileta Inteligente
 
 > **Fuente única de pendientes del proyecto.** Si algo queda por hacer, se anota acá, no en el
-> README ni en un comentario del código. Actualizado el **2026-08-13**.
+> README ni en un comentario del código. Actualizado el **2026-08-20**.
 >
 > 🔴 = bloquea la entrega · 🟠 = importante · 🟡 = mejora
 
@@ -26,12 +26,15 @@
 |---|---|---|
 | 6 | 🟠 **Calibrar el piso de ruido en el lugar definitivo** | El taller dio `/piso 12`. El patio de la pileta va a tener otro ruido de fondo: `/espectro` en silencio y ajustar. No requiere recompilar. **Ojo con la fuente de audio**: si la música sale de un celular, sus graves llegan con crudo ~11,8 y el piso de 12 los corta — ahí conviene `/piso 10` |
 | 7 | 🟠 **Decisión abierta desde el 2026-08-06**: si el latido de la tarea de Telegram se detiene (bot colgado), ¿el ESP32 debe reiniciarse solo? Recupera el control remoto sin intervención, pero un reinicio deja el calentador en OFF por diseño. **Menos urgente desde el 2026-08-13**: la causa principal de los cuelgues era el timeout del saludo TLS, ya bajado de 120 s a 5 s | espera decisión de Mariano |
-| 7c | 🟡 **Latencia del bot**: responde con hasta ~2,5 s de demora porque consulta a intervalos (`INTERVALO_TELEGRAM`). La mejora de fondo es **long polling** —que Telegram mantenga la consulta abierta y conteste apenas llega un mensaje—, lo que además haría muchas menos conexiones. Cambio acotado a la tarea de Telegram | propuesto, no hecho |
+| 7c | 🟠 **Latencia de fondo del bot: long polling** | Medido el 2026-08-20: cada vuelta paga un saludo TLS completo, porque la librería cierra la conexión cuando no hay mensajes (`UniversalTelegramBot.cpp:433`), y encima consulta cada 2,5 s pidiendo `limit=1` — un mensaje por vez. Peor caso antes de la v5.4: ~15 s por comando; ahora ~7 s. La solución de fondo es **long polling** (`bot.longPoll`), que deja la consulta abierta y contesta apenas llega el mensaje. ⚠️ Necesita prueba en hardware: durante la espera la tarea no cede CPU y hay que verificar el watchdog del núcleo 0, y el latido de `ultimoLatidoTelegram` se tiene que ajustar o va a parecer colgado | propuesto, no hecho |
 | 7d | 🟡 **El diámetro cambia a medida que el hilo pasa de un carrete al otro**: al principio del recorrido el que suelta tiene más diámetro que el que recoge y el hilo se afloja; al final pasa lo contrario y se tensa. Con motores rígidamente sincronizados es inevitable (en un cassette se resuelve con embrague). Si aparece, la salida simple es que el motor que desenrolla vaya más despacio | a observar con la lona puesta |
 | 7b | 🔴 **Probar los TRES sistemas funcionando a la vez.** Hasta ahora cada uno se verificó por separado. Los motores tiran picos de más de 1 A en cada arranque y comparten el GND con el ESP32 y el micrófono: es el escenario donde puede aparecer ruido en el ADC, parpadeo en la tira o un reinicio por caída de tensión. El sistema ya tiene con qué detectarlo (aviso de brownout al arrancar, `/diag`) | pendiente |
 | 8 | 🟡 **Aliasing**: no hay filtro anti-aliasing antes del ADC, así que el contenido por encima de 5 kHz se pliega dentro del rango analizado. Con música real no molestó, pero es la explicación de las frecuencias dominantes raras cuando la señal es débil | no urgente |
 | 9 | 🟡 **Documentar la arquitectura viva** (los 7 pilares del estándar: `ARQUITECTURA.md` + backend, frontend, datos, integración, seguridad, infraestructura). El proyecto no los tiene | propuesto, no hecho |
 | 10 | 🟡 **Ordenar `docs/`**: hay 4 planes, 3 de ellos ya cerrados (`PLAN-LUCES-ADAPTATIVAS`, `-V3-SIN-FFT`, `-V4-BICANAL`). Convendría moverlos a `docs/planes-cerrados/` para que no confundan con el vigente | **cambio estructural: avisar antes de hacerlo** |
+| 11 | 🟠 **El limitador de corriente puede apagar la tira entera sin avisar** | Cada píxel consume 1 mA aunque esté apagado, y el limitador resta ese consumo fijo del presupuesto de `/corriente`. Si `/leds` alcanza a `/corriente` (por ejemplo `/leds 120` con `/corriente 120`), no queda nada para el color: **la tira se pinta negra en todos los modos, incluso `/luces_on`**, y no se informa en ningún lado. `/leds` y `/corriente` deberían rechazar la combinación imposible, y `/status` avisar cuando el reposo se come el presupuesto | detectado el 2026-08-20, no hecho |
+| 12 | 🔴 **Cargar la v5.4 al ESP32 y verificarla en vivo** | El firmware está compilado y commiteado, pero todavía no cargado (la carga reinicia la placa y Mariano estaba con el armado físico). Verificar con el Monitor Serie: que `/help` llegue una sola vez y que la línea `Tiempos: consulta N ms | respuesta N ms` no se acerque a los 8000 ms | pendiente |
+| 13 | 🟡 **Límite conocido de la librería 1.3.0** | `readHTTPAnswer()` corta la lectura apenas hay datos disponibles (`if (responseReceived) break;`), así que una respuesta partida en varios segmentos TCP puede leerse incompleta. No se puede arreglar sin tocar la librería —que es dependencia oficial y no se modifica—; se mitiga manteniendo todos los mensajes cortos (hoy ninguno pasa de 907 bytes) | documentado, sin acción |
 
 ---
 

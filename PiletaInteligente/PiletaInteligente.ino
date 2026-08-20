@@ -453,6 +453,36 @@ const unsigned long INTERVALO_TELEGRAM = 2500;   // Cada cuánto se revisan mens
 const unsigned long HANDSHAKE_TLS_SEGUNDOS = 5;
 const unsigned long WIFI_TIMEOUT_MS    = 15000;  // Cuánto esperar al WiFi antes de rendirse
 
+// Cuánto se le permite tardar a una consulta a Telegram antes de avisar por el
+// Monitor Serie. No corta nada: sólo deja registro de que esa vuelta salió cara,
+// que casi siempre es el saludo TLS con la red del lugar saturada.
+const unsigned long AVISO_CONSULTA_LENTA_MS = 3000;
+
+// Tamaño del buffer con el que la librería de Telegram arma y lee cada mensaje,
+// EN BYTES.
+//
+// De fábrica son 1500 (UniversalTelegramBot.h: `maxMessageLength = 1500`) y ese
+// número no alcanza. Cuando el bot manda un mensaje, Telegram confirma el envío
+// devolviendo el TEXTO ENTERO más unos 400 bytes con los datos del chat. Si esa
+// confirmación pasa de 1500, readHTTPAnswer() la corta por la mitad
+// (`if (ch_count < maxMessageLength)`), el JSON queda incompleto y
+// checkForOkResponse() no puede darlo por bueno. Ahí está el problema: al no
+// confirmarse, sendPostMessage() entra en `while (millis() < sttime + 8000)` y
+// REENVÍA el mismo mensaje una y otra vez durante ocho segundos, con la tarea de
+// Telegram sin atender nada más.
+//
+// El síntoma en el chat es un mensaje que llega duplicado aunque el comando se
+// haya ejecutado una sola vez — la duplicación pasa en la respuesta que sale, no
+// en la orden que entra. Verificado por Mariano el 2026-08-20, y medido acá: la
+// ayuda de /help son 1363 bytes de texto, así que su confirmación rondaba los
+// 1800 y caía siempre en el bucle.
+//
+// Con 4096 entra cualquier respuesta del sistema con margen de sobra. Aun así
+// los mensajes largos se parten en varios (ver armarAyudaControl y
+// armarAyudaConsultas): el buffer grande evita que se trunquen, pero no acorta
+// lo que tardan en viajar.
+const int TELEGRAM_BUFFER_BYTES = 4096;
+
 // ============================================================
 //   OBJETOS PRINCIPALES
 // ============================================================
@@ -1892,8 +1922,9 @@ void conectarWiFiTelegram() {
     Serial.print("IP del ESP32: ");
     Serial.println(WiFi.localIP());
 
-    configurarClienteTelegram();
+    configurarTelegram();
     telegramListo = true;
+    descartarMensajesViejos();
     Serial.println("Bot de Telegram listo.");
   } else {
     telegramListo = false;
@@ -1926,12 +1957,30 @@ void tareaTelegram(void *parametros) {
   }
 }
 
-// Toda la configuración del cliente seguro en un solo lugar: se aplica al
-// conectar y cada vez que hay que rearmar la conexión, y así no puede quedar una
-// de las dos mitades con ajustes viejos.
-void configurarClienteTelegram() {
+// Toda la configuración de Telegram en un solo lugar —la del cliente seguro y la
+// del bot—: se aplica al conectar y cada vez que hay que rearmar la conexión, y
+// así no puede quedar una de las mitades con ajustes viejos.
+void configurarTelegram() {
   client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
   client.setHandshakeTimeout(HANDSHAKE_TLS_SEGUNDOS);
+  bot.maxMessageLength = TELEGRAM_BUFFER_BYTES;
+}
+
+// Telegram guarda hasta 24 horas los mensajes que el bot todavía no confirmó.
+// Sin esto, un ESP32 que estuvo apagado un rato arranca masticando esa cola
+// entera —del mensaje más viejo al más nuevo y de a uno por vuelta—: parece
+// trabado y, peor, podría mover el cobertor por una orden de hace horas.
+//
+// getUpdates(-1) pide el ÚLTIMO mensaje de la cola: el offset negativo cuenta
+// desde el final, según la API de Telegram. La librería guarda su update_id en
+// `last_message_received`, así que la primera consulta de verdad va a pedir
+// `last_message_received + 1` y con eso Telegram da por confirmada toda la cola.
+// Lo que devuelva esta llamada se DESCARTA a propósito: es un comando viejo, y
+// obedecerlo al encender sería lo contrario de lo que el usuario espera.
+void descartarMensajesViejos() {
+  if (bot.getUpdates(-1) > 0) {
+    Serial.println("Telegram: habia mensajes viejos en la cola. Se descartan (llegaron con el ESP32 apagado).");
+  }
 }
 
 // Despacha el aviso que el loop haya dejado en el buzón (ver avisarCobertor).
@@ -1964,11 +2013,22 @@ void procesarTelegram() {
   }
 
   if (!telegramListo) {
-    configurarClienteTelegram();
+    configurarTelegram();
     telegramListo = true;
   }
 
+  // La consulta se cronometra siempre: cuando el bot "va lento", lo primero que
+  // hay que saber es si el tiempo se va en preguntar (saludo TLS, red) o en
+  // contestar (el envío de la respuesta).
+  const unsigned long antesDeConsultar = millis();
   int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+  const unsigned long consultaMs = millis() - antesDeConsultar;
+
+  if (consultaMs > AVISO_CONSULTA_LENTA_MS) {
+    Serial.print("Telegram: la consulta tardo ");
+    Serial.print(consultaMs);
+    Serial.println(" ms (saludo TLS lento o red saturada).");
+  }
 
   for (int i = 0; i < numNewMessages; i++) {
     String chat_id   = bot.messages[i].chat_id;
@@ -1988,14 +2048,25 @@ void procesarTelegram() {
     Serial.print("Chat: "); Serial.println(chat_id);
     Serial.print("Msg: ");  Serial.println(text);
 
+    const unsigned long antesDeResponder = millis();
     manejarComandoTelegram(chat_id, text, from_name);
+
+    // Los dos números que explican la latencia que se siente en el celular. Si
+    // "respuesta" se va cerca de los 8000 ms es el bucle de reenvío de la
+    // librería (ver TELEGRAM_BUFFER_BYTES): ese mensaje es demasiado largo.
+    Serial.print("Tiempos: consulta ");
+    Serial.print(consultaMs);
+    Serial.print(" ms | respuesta ");
+    Serial.print(millis() - antesDeResponder);
+    Serial.println(" ms");
   }
 }
 
 void manejarComandoTelegram(String chat_id, String text, String from_name) {
 
   if (text == "/start" || text == "/help") {
-    bot.sendMessage(chat_id, armarAyuda(from_name), "");
+    bot.sendMessage(chat_id, armarAyudaControl(from_name), "");
+    bot.sendMessage(chat_id, armarAyudaConsultas(), "");
   }
 
   // --- Luces ---
@@ -2383,7 +2454,14 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
 //   MENSAJES DE TELEGRAM
 // ============================================================
 
-String armarAyuda(String from_name) {
+// La ayuda va en DOS mensajes, no en uno.
+//
+// Junta medía 1363 bytes de texto, y la confirmación que devuelve Telegram
+// —que repite el texto entero— se pasaba del buffer de la librería y disparaba
+// el bucle de reenvío de 8 segundos (ver TELEGRAM_BUFFER_BYTES). Partida, cada
+// mitad queda holgada aunque el buffer ya sea grande, y de paso se lee mejor en
+// el celular: primero lo de todos los días, después lo de taller.
+String armarAyudaControl(String from_name) {
   String s = "Hola, " + from_name + " 👋\n";
   s += "Control de la Pileta Inteligente.\n\n";
   s += "LUCES:\n";
@@ -2408,7 +2486,12 @@ String armarAyuda(String from_name) {
   s += "/motor_a 5 - probar un motor solo N segundos (taller)\n";
   s += "/cobertor_sentido - invertir el sentido del cobertor\n";
   s += "/sentido_a, /sentido_b - invertir el giro de esa PRUEBA\n\n";
-  s += "INFORMACIÓN:\n";
+  s += "(sigue en el próximo mensaje)";
+  return s;
+}
+
+String armarAyudaConsultas() {
+  String s = "INFORMACIÓN:\n";
   s += "/status - estado general\n";
   s += "/temp - temperatura\n";
   s += "/audio - volumen y bandas en vivo\n";
@@ -2499,6 +2582,12 @@ String armarStatus() {
   s += "Fines de carrera: " + finesDeCarreraTexto() + "\n";
   s += "WiFi: ";
   s += (WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado");
+
+  // Memoria libre y el piso histórico desde que arrancó. El piso es el número
+  // que importa: si baja sesión tras sesión, hay una fuga o el heap se está
+  // fragmentando, y eso termina en reinicios raros de madrugada.
+  s += "\nMemoria: " + String(ESP.getFreeHeap() / 1024) + " KB libres (minimo " +
+       String(ESP.getMinFreeHeap() / 1024) + " KB)";
   return s;
 }
 

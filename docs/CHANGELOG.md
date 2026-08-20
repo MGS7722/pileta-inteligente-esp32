@@ -8,6 +8,49 @@
 
 ---
 
+## v5.4 — 2026-08-20 · El bot deja de trabarse: el buffer de Telegram y la cola vieja
+
+El bot tardaba muchísimo en contestar y a veces mandaba la misma respuesta dos veces, aunque el
+comando se ejecutara una sola. No era el WiFi ni el ESP32 quedándose sin memoria: era el buffer
+de la librería de Telegram.
+
+### Arreglado
+- **El bucle de reenvío de 8 segundos.** La librería trae un buffer de 1500 bytes
+  (`maxMessageLength`) que usa tanto para armar el mensaje como para leer la confirmación. Y
+  Telegram, al confirmar un envío, **devuelve el texto entero** más unos 400 bytes con los datos
+  del chat. La ayuda de `/help` son 1363 bytes de texto, así que su confirmación llegaba cortada
+  por la mitad, el JSON quedaba incompleto y la librería no podía darla por buena: entraba en
+  `while (millis() < sttime + 8000)` y **reenviaba el mismo mensaje durante ocho segundos**, con
+  el bot sin atender nada más. Ese era el mensaje duplicado que se veía en el chat — la
+  duplicación pasaba en la respuesta que salía, no en la orden que entraba. El buffer pasó a
+  **4096 bytes**.
+- **La ayuda de `/help` ahora son dos mensajes** en vez de uno de 1363 bytes: primero los
+  comandos de todos los días (luces, calentador, cobertor), después los de consulta y los ajustes
+  finos de taller. Ninguno de los dos pasa de 907 bytes.
+- **La cola vieja de Telegram ya no se ejecuta al encender.** Telegram guarda hasta 24 horas los
+  mensajes que el bot no confirmó, así que un ESP32 que estuvo apagado un rato arrancaba
+  masticando esa cola entera, del mensaje más viejo al más nuevo y de a uno por vuelta: parecía
+  trabado y, peor, podía mover el cobertor por una orden de hacía horas. Ahora al conectar se
+  descarta lo pendiente y el bot arranca escuchando sólo lo nuevo.
+
+### Agregado
+- **`/status` informa la memoria**: KB libres y el mínimo histórico desde que arrancó. El mínimo
+  es el número que importa: si baja sesión tras sesión hay una fuga o el heap se está
+  fragmentando, y eso termina en reinicios raros. Hasta ahora el programa no medía la memoria en
+  ningún lado.
+- **Dos tiempos por el Monitor Serie en cada comando**: cuánto tardó la consulta y cuánto tardó
+  la respuesta. Separan el problema en el acto — si el tiempo se va en *consultar* es el saludo
+  TLS o la red; si se va en *responder* cerca de los 8000 ms, es el bucle de reenvío otra vez.
+  Además, una consulta que pase de 3 segundos deja aviso propio.
+
+### Todavía pendiente
+- **La latencia de fondo sigue siendo de segundos** y esto no la arregla: cada vuelta abre una
+  conexión TLS nueva (la librería cierra la conexión cuando no hay mensajes) y se consulta cada
+  2,5 s, de a un mensaje por vez. La solución de fondo es **long polling**, que necesita prueba
+  en hardware por el watchdog del núcleo 0. Ver `docs/PENDIENTES.md` #7c.
+
+---
+
 ## v5.3 — 2026-08-13 · Los sentidos, separados y sin pisarse
 
 Continuación de la v5.2, con el cobertor ya funcionando en hardware. Dos cambios pedidos en el

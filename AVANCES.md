@@ -69,6 +69,14 @@
 - [x] Librerías: UniversalTelegramBot 1.3.0 + ArduinoJson **6.21.5** (la 7 no compila) + core ESP32 3.3.10
 - [x] Comandos integrados para calentador, luces y cobertor
 - [x] Compila OK en la máquina de Mariano (solo warnings de librerías, inofensivos)
+- [x] **El bucle de reenvío de 8 s, resuelto** (2026-08-20): el buffer de 1500 bytes de la
+      librería truncaba la confirmación de Telegram y hacía reenviar el mismo mensaje. Buffer a
+      4096 y `/help` partido en dos mensajes de 907 y 486 bytes
+- [x] **La cola vieja ya no se ejecuta al encender** (2026-08-20): `descartarMensajesViejos()`
+- [x] **Memoria libre y mínimo histórico visibles en `/status`**, y tiempos de consulta y
+      respuesta por el Monitor Serie
+- [ ] Cargar la v5.4 al ESP32 y verificar en vivo que `/help` no se duplica
+- [ ] Long polling para bajar la latencia de fondo (ver `docs/PENDIENTES.md` #7c)
 
 ---
 
@@ -693,3 +701,72 @@ tiempos) una vez montado el mecanismo con la lona.
 - **Opus 5**: rediseño del cobertor por tiempo, investigación del core ESP32 (PWM, handshake
   TLS), diagnóstico con el Monitor Serie, reescritura del módulo de motores, carga del firmware
   y documentación.
+
+### Sesión 2026-08-20 — El bot lento: el buffer de 1500 bytes de la librería de Telegram
+
+Mariano terminó de conectar todo en la pileta y reportó dos cosas: el bot tarda muchísimo en
+responder, y **a veces manda la misma respuesta dos veces aunque el comando se ejecute una sola**.
+Su pregunta fue si se le podía "limpiar el caché o la memoria" sin perder los comandos.
+
+**La respuesta corta a esa pregunta**: el ESP32 no acumula caché. Lo que sí se acumula es la cola
+de mensajes del servidor de Telegram, que guarda hasta 24 horas lo que el bot no confirmó. Y la
+configuración nunca estuvo en riesgo: todo lo de `/velocidad`, `/tiempo_*`, `/brillo`, `/leds`,
+`/corriente`, `/piso`, `/temperatura`, `/efecto` y los sentidos vive en NVS y sobrevive a
+reinicios y a recargas de firmware.
+
+**El hallazgo, que estaba en la librería y no en nuestro código**
+
+`UniversalTelegramBot 1.3.0` trae un buffer de 1500 bytes (`maxMessageLength`) y lo usa para las
+dos puntas: armar el mensaje que sale y leer la confirmación que vuelve. El detalle que rompe
+todo es que **Telegram, al confirmar un envío, devuelve el texto entero del mensaje** más unos
+400 bytes con los datos del chat.
+
+Se midieron los mensajes del sistema con un script sobre el propio `.ino`: la ayuda de `/help`
+son **1363 bytes de texto**, así que su confirmación rondaba los 1800. De ahí en adelante:
+
+1. `readHTTPAnswer()` corta el cuerpo en 1500 (`if (ch_count < maxMessageLength)`).
+2. El JSON queda incompleto y `checkForOkResponse()` no puede darlo por bueno.
+3. `sendPostMessage()` entra en `while (millis() < sttime + 8000)` y **reenvía el mismo mensaje
+   una y otra vez durante ocho segundos**, con la tarea de Telegram sin atender nada más.
+
+Eso explica **exactamente** el síntoma que reportó Mariano: el mensaje llega duplicado pero el
+comando se ejecuta una sola vez, porque la duplicación pasa en la respuesta que sale, no en la
+orden que entra.
+
+**La otra mitad: la cola vieja**
+
+`last_message_received` arranca en 0, así que al encender el ESP32 pedía los updates desde el
+principio: ejecutaba **los comandos viejos primero**, del más antiguo al más nuevo y de a uno por
+vuelta de 2,5 s. Además de parecer trabado, es peligroso — podía mover el cobertor por una orden
+de hacía horas. Ahora, al conectar, `descartarMensajesViejos()` pide el último update con
+`getUpdates(-1)` y lo descarta: Telegram da por confirmada toda la cola y el bot arranca
+escuchando sólo lo nuevo.
+
+**Qué se cambió**
+
+| Cambio | Por qué |
+|---|---|
+| `bot.maxMessageLength = 4096` | Que la confirmación entre entera y no se dispare el bucle de 8 s |
+| `/help` partido en dos mensajes (907 y 486 bytes) | Ningún mensaje del sistema pasa ya de 907 bytes |
+| `descartarMensajesViejos()` al conectar | No ejecutar la cola vieja al encender |
+| Memoria libre y mínimo histórico en `/status` | El programa no medía la memoria en ningún lado |
+| Tiempos de consulta y de respuesta por el Monitor Serie | Separar "tarda en preguntar" de "tarda en contestar" |
+
+**Lo que NO arregla esto** (y quedó en `docs/PENDIENTES.md` #7c, con la cuenta hecha): la
+latencia de fondo. La librería cierra la conexión cuando no hay mensajes
+(`UniversalTelegramBot.cpp:433`), así que **cada vuelta paga un saludo TLS completo**, y encima
+consulta cada 2,5 s pidiendo `limit=1`, un mensaje por vez. La cuenta del peor caso antes de esta
+sesión era ~15 s por comando (2,5 de espera + 3 de saludo + 1,5 de lectura + 8 del bucle); sin el
+bucle queda en ~7 s. La solución de fondo es **long polling**, que necesita prueba en hardware:
+durante la espera la tarea no cede CPU y hay que verificar el watchdog del núcleo 0.
+
+**Gate**: compilado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de flash y 16 %
+de RAM**, igual que antes. El único warning es el conocido de LiquidCrystal I2C.
+
+**Pendiente de esta sesión**: cargar el firmware al ESP32 y verificar en vivo con el Monitor
+Serie que `/help` deja de duplicarse y que el tiempo de respuesta baja de los 8000 ms. No se
+cargó todavía porque Mariano estaba con el armado físico y la carga reinicia la placa.
+
+#### Atribución por modelo (sesión 2026-08-20)
+- **Opus 5**: auditoría del camino completo de Telegram (nuestro código + librería 1.3.0 +
+  core), medición de los mensajes, los cuatro cambios del firmware y la documentación.
