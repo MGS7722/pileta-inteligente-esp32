@@ -370,8 +370,9 @@ const unsigned long ARRANQUE_MS  = 300;
 // por qué caer justo en un número redondo: a esta velocidad, medio segundo es
 // varios centímetros de hilo. Los comandos igual se escriben en segundos, con
 // coma o punto (/tiempo_abrir 4.5).
-uint16_t tiempoAbrirDecimas  = 80;   // 8,0 s
-uint16_t tiempoCerrarDecimas = 80;
+// Cada motor lleva los suyos (ver la estructura Motor); acá sólo queda el valor
+// de fábrica con el que arrancan los cuatro.
+const uint16_t TIEMPO_DE_FABRICA_DECIMAS = 80;   // 8,0 s
 
 const uint16_t TIEMPO_COBERTOR_MINIMO = 1;     // 0,1 s
 const uint16_t TIEMPO_COBERTOR_MAXIMO = 600;   // 60,0 s
@@ -405,12 +406,32 @@ struct Motor {
   // se note recién en el movimiento siguiente.
   int           velocidadAbrir;
   int           velocidadCerrar;
+
+  // Cuánto gira ESTE motor en cada movimiento, en décimas de segundo, guardado
+  // en NVS. También son dos y también por motor, por el mismo motivo que las
+  // velocidades: los carretes no se comportan igual en los dos sentidos, y a
+  // veces lo que hace falta no es que uno vaya más despacio sino que arranque
+  // igual y se detenga antes.
+  uint16_t      tiempoAbrirDecimas;
+  uint16_t      tiempoCerrarDecimas;
+
+  // --- Sólo del movimiento en curso (no se guardan) ---
+  //
+  // Los escribe quien arranca el movimiento (la tarea de Telegram, núcleo 0) y
+  // los lee y apaga el loop (núcleo 1), igual que el resto del estado del
+  // cobertor: por eso van volatile.
+  volatile unsigned long duracionMs;   // cuánto tiene que durar lo de este motor
+  volatile bool          enMarcha;     // sigue girando: todavía no le llegó su hora
 };
 
 Motor motorA = { MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_EN, 'A',
-                 VELOCIDAD_DE_FABRICA, VELOCIDAD_DE_FABRICA };
+                 VELOCIDAD_DE_FABRICA, VELOCIDAD_DE_FABRICA,
+                 TIEMPO_DE_FABRICA_DECIMAS, TIEMPO_DE_FABRICA_DECIMAS,
+                 0, false };
 Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B',
-                 VELOCIDAD_DE_FABRICA, VELOCIDAD_DE_FABRICA };
+                 VELOCIDAD_DE_FABRICA, VELOCIDAD_DE_FABRICA,
+                 TIEMPO_DE_FABRICA_DECIMAS, TIEMPO_DE_FABRICA_DECIMAS,
+                 0, false };
 
 // --- Dos sistemas de sentido, SEPARADOS y sin pisarse ---
 //
@@ -419,8 +440,11 @@ Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B',
 //    Los dos motores reciben SIEMPRE la misma polaridad, calculada una sola vez
 //    y aplicada a los dos: van los dos hacia el mismo lado, nunca uno contra el
 //    otro. Es una garantía estructural, no una convención — mirá
-//    iniciarMovimiento(): los dos motorMover() reciben literalmente la misma
-//    variable, así que no hay estado posible en el que difieran.
+//    iniciarMovimiento(): el sentido se calcula UNA vez y las dos llamadas a
+//    arrancarMotor() reciben literalmente la misma variable, así que no hay
+//    estado posible en el que difieran. Que cada motor tenga su propia
+//    velocidad y su propio tiempo no lo cambia: eso decide cuán rápido y hasta
+//    cuándo gira cada uno, nunca hacia qué lado.
 //
 //    Esta perilla decide únicamente CUÁL de las dos direcciones se llama
 //    "abrir", y se cambia con /cobertor_sentido.
@@ -670,7 +694,6 @@ enum PosicionCobertor { POS_DESCONOCIDA, POS_ABIERTO, POS_CERRADO };
 volatile EstadoCobertor  estadoCobertor = COB_PARADO;
 volatile PosicionCobertor posicionCobertor = POS_DESCONOCIDA;
 volatile unsigned long   inicioMovimientoCobertor = 0;
-volatile unsigned long   duracionMovimientoMs = 0;   // cuánto tiene que durar el movimiento en curso
 volatile bool arranqueEnCurso = false;   // true mientras dura la patada de arranque
 volatile char motorEnPrueba = '-';   // 'A' o 'B' mientras dura COB_PRUEBA
 
@@ -744,8 +767,17 @@ void setup() {
   efectoActual      = preferencias.getUChar("efecto", efectoActual);
   tiraEsGRB         = preferencias.getBool("tiraGRB", tiraEsGRB);
   pisoRuidoBanda    = preferencias.getUChar("pisoRuido", pisoRuidoBanda);
-  tiempoAbrirDecimas  = preferencias.getUShort("tAbrirDec",  tiempoAbrirDecimas);
-  tiempoCerrarDecimas = preferencias.getUShort("tCerrarDec", tiempoCerrarDecimas);
+  // Los tiempos pasaron de dos (uno por movimiento) a cuatro (uno por movimiento
+  // Y por motor) el 2026-08-20. Las claves viejas se leen primero y sirven de
+  // punto de partida para los dos motores, así una calibración hecha con la lona
+  // NO se pierde al actualizar; si ya existen las claves por motor, esas mandan.
+  const uint16_t tiempoAbrirViejo  = preferencias.getUShort("tAbrirDec",  TIEMPO_DE_FABRICA_DECIMAS);
+  const uint16_t tiempoCerrarViejo = preferencias.getUShort("tCerrarDec", TIEMPO_DE_FABRICA_DECIMAS);
+
+  motorA.tiempoAbrirDecimas  = preferencias.getUShort("tAbrirA",  tiempoAbrirViejo);
+  motorB.tiempoAbrirDecimas  = preferencias.getUShort("tAbrirB",  tiempoAbrirViejo);
+  motorA.tiempoCerrarDecimas = preferencias.getUShort("tCerrarA", tiempoCerrarViejo);
+  motorB.tiempoCerrarDecimas = preferencias.getUShort("tCerrarB", tiempoCerrarViejo);
   cobertorInvertido = preferencias.getBool("cobInvert", cobertorInvertido);
   pruebaAInvertida  = preferencias.getBool("pruebaAInv", pruebaAInvertida);
   pruebaBInvertida  = preferencias.getBool("pruebaBInv", pruebaBInvertida);
@@ -773,8 +805,10 @@ void setup() {
   corrienteMaximaMa = constrain(corrienteMaximaMa, 50, 2000);
   efectoActual      = constrain(efectoActual, EFECTO_MINIMO, EFECTO_MAXIMO);
   pisoRuidoBanda    = constrain(pisoRuidoBanda, 0, 200);
-  tiempoAbrirDecimas  = constrain(tiempoAbrirDecimas,  TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
-  tiempoCerrarDecimas = constrain(tiempoCerrarDecimas, TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
+  motorA.tiempoAbrirDecimas  = constrain(motorA.tiempoAbrirDecimas,  TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
+  motorB.tiempoAbrirDecimas  = constrain(motorB.tiempoAbrirDecimas,  TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
+  motorA.tiempoCerrarDecimas = constrain(motorA.tiempoCerrarDecimas, TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
+  motorB.tiempoCerrarDecimas = constrain(motorB.tiempoCerrarDecimas, TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
   motorA.velocidadAbrir  = constrain(motorA.velocidadAbrir,  pwmDeVelocidadMinima(), 255);
   motorA.velocidadCerrar = constrain(motorA.velocidadCerrar, pwmDeVelocidadMinima(), 255);
   motorB.velocidadAbrir  = constrain(motorB.velocidadAbrir,  pwmDeVelocidadMinima(), 255);
@@ -1796,6 +1830,53 @@ void guardarVelocidad(Motor &motor, bool alAbrir, int porcentaje) {
   preferencias.putUChar(clave, (uint8_t)pwm);
 }
 
+// Guarda el tiempo de UN motor para UN movimiento, en el motor y en la memoria
+// del ESP32. Misma idea que guardarVelocidad(): la clave se arma con el
+// movimiento y el nombre del motor, así no hay una lista aparte que mantener.
+void guardarTiempo(Motor &motor, bool alAbrir, uint16_t decimas) {
+  if (alAbrir) motor.tiempoAbrirDecimas  = decimas;
+  else         motor.tiempoCerrarDecimas = decimas;
+
+  char clave[12];
+  snprintf(clave, sizeof(clave), "t%s%c", alAbrir ? "Abrir" : "Cerrar", motor.nombre);
+  preferencias.putUShort(clave, decimas);
+}
+
+bool tiempoValido(uint16_t decimas) {
+  return decimas >= TIEMPO_COBERTOR_MINIMO && decimas <= TIEMPO_COBERTOR_MAXIMO;
+}
+
+// Lee uno o dos tiempos en segundos, con coma o punto. Devuelve cuántos encontró
+// (0, 1 o 2). Un valor que no se entiende vuelve como 0 y lo rechaza quien
+// llama: acá un cero silencioso sería un motor que no se mueve.
+int leerDosTiempos(const String &argumentos, uint16_t &primero, uint16_t &segundo) {
+  String texto = argumentos;
+  texto.trim();
+  if (texto.length() == 0) return 0;
+
+  const int espacio = texto.indexOf(' ');
+  const String parte1 = (espacio < 0) ? texto : texto.substring(0, espacio);
+  String parte2 = (espacio < 0) ? String("") : texto.substring(espacio + 1);
+  parte2.trim();
+
+  primero = leerTiempoEnDecimas(parte1);
+  if (primero == 0) return 0;
+
+  if (parte2.length() == 0) return 1;
+  segundo = leerTiempoEnDecimas(parte2);
+  if (segundo == 0) return 0;
+  return 2;
+}
+
+// La tabla completa de los cuatro tiempos, con el mismo formato que la de
+// velocidades: los cuatro números juntos son lo que hace entendible el ajuste.
+String tablaDeTiempos() {
+  return "Abrir:  A " + segundosTexto(motorA.tiempoAbrirDecimas) +
+         " s | B " + segundosTexto(motorB.tiempoAbrirDecimas) + " s\n" +
+         "Cerrar: A " + segundosTexto(motorA.tiempoCerrarDecimas) +
+         " s | B " + segundosTexto(motorB.tiempoCerrarDecimas) + " s";
+}
+
 // La tabla completa de las cuatro velocidades. Va en /status, en las respuestas
 // de los comandos y cada vez que hay que mostrar cómo quedó algo: que el usuario
 // vea SIEMPRE los cuatro números juntos es lo que hace entendible un ajuste que
@@ -1930,16 +2011,15 @@ void cobertorFrenar() {
 // con las entradas en bajo lo pondría en freno, justo lo contrario de dejarlo
 // girar arrastrado.
 void aplicarVelocidadDeRegimen() {
-  if (estadoCobertor == COB_PRUEBA) {
-    Motor &motor = (motorEnPrueba == 'A') ? motorA : motorB;
-    motorCambiarVelocidad(motor, velocidadDelMovimiento(motor));
-  } else {
-    // Cada uno baja a LA SUYA, y la suya depende de hacia dónde va. Con el hilo
-    // pasando de un carrete al otro, los dos al mismo PWM hacen que uno arrastre
-    // al otro — y cuál sobra se da vuelta entre abrir y cerrar.
-    motorCambiarVelocidad(motorA, velocidadDelMovimiento(motorA));
-    motorCambiarVelocidad(motorB, velocidadDelMovimiento(motorB));
-  }
+  // Cada uno baja a LA SUYA, y la suya depende de hacia dónde va. Con el hilo
+  // pasando de un carrete al otro, los dos al mismo PWM hacen que uno arrastre
+  // al otro — y cuál sobra se da vuelta entre abrir y cerrar.
+  //
+  // Sólo se toca a los que siguen en marcha: subirle la habilitación a un motor
+  // ya frenado —o al que quedó suelto en una prueba— es justo lo contrario de lo
+  // que se quiere.
+  if (motorA.enMarcha) motorCambiarVelocidad(motorA, velocidadDelMovimiento(motorA));
+  if (motorB.enMarcha) motorCambiarVelocidad(motorB, velocidadDelMovimiento(motorB));
 }
 
 // --- Arranque de un movimiento -------------------------------------------
@@ -1954,27 +2034,25 @@ void aplicarVelocidadDeRegimen() {
 // hace varios minutos— y cortar en el acto. Primero TODOS los datos del
 // movimiento, el estado al final: cuando el loop ve el estado nuevo, ya está
 // todo listo.
-void iniciarMovimiento(EstadoCobertor queHace, bool haciaAbrir, uint16_t decimas, char cualMotor) {
+void iniciarMovimiento(EstadoCobertor queHace, bool haciaAbrir,
+                       uint16_t decimasA, uint16_t decimasB, char cualMotor) {
   inicioMovimientoCobertor = millis();
-  duracionMovimientoMs     = (unsigned long)decimas * 100UL;
 
-  if (queHace == COB_PRUEBA) {
-    // Prueba de taller: mueve UN motor con SU propio sentido y suelta el otro.
-    const bool avanza = sentidoDeLaPrueba(cualMotor);
-    if (cualMotor == 'A') {
-      motorSoltar(motorB);
-      motorMover(motorA, avanza, PWM_ARRANQUE);
-    } else {
-      motorSoltar(motorA);
-      motorMover(motorB, avanza, PWM_ARRANQUE);
-    }
-  } else {
-    // Cobertor: UNA sola polaridad para los dos motores. Que reciban la misma
-    // variable es lo que garantiza que jamás puedan tirar uno contra el otro.
-    const bool avanza = sentidoDelCobertor(haciaAbrir);
-    motorMover(motorA, avanza, PWM_ARRANQUE);
-    motorMover(motorB, avanza, PWM_ARRANQUE);
-  }
+  // Cada motor recibe SU duración. Un 0 significa "este no se mueve", que es lo
+  // que pasa con el motor que no se está probando.
+  motorA.duracionMs = (unsigned long)decimasA * 100UL;
+  motorB.duracionMs = (unsigned long)decimasB * 100UL;
+  motorA.enMarcha   = (decimasA > 0);
+  motorB.enMarcha   = (decimasB > 0);
+
+  // El sentido se calcula UNA sola vez y las dos llamadas reciben literalmente
+  // la misma variable: por eso es estructuralmente imposible que el cobertor
+  // haga girar los motores uno contra el otro. La prueba de taller es el único
+  // caso con sentido propio, y ahí se mueve un solo motor.
+  const bool avanza = (queHace == COB_PRUEBA) ? sentidoDeLaPrueba(cualMotor)
+                                              : sentidoDelCobertor(haciaAbrir);
+  arrancarMotor(motorA, avanza);
+  arrancarMotor(motorB, avanza);
 
   motorEnPrueba   = (queHace == COB_PRUEBA) ? cualMotor : '-';
   arranqueEnCurso = true;
@@ -1989,24 +2067,40 @@ void iniciarMovimiento(EstadoCobertor queHace, bool haciaAbrir, uint16_t decimas
     Serial.print(" motor ");
     Serial.print(cualMotor);
   }
-  Serial.print(" | ");
-  Serial.print(segundosTexto(decimas));
+  Serial.print(" | A ");
+  Serial.print(segundosTexto(decimasA));
+  Serial.print(" s | B ");
+  Serial.print(segundosTexto(decimasB));
   Serial.print(" s | t=");
   Serial.println(inicioMovimientoCobertor);
 }
 
+// Pone en marcha un motor, o lo suelta si en este movimiento no le toca girar.
+// Al que no se mueve se lo SUELTA en vez de frenarlo: con el hilo atado entre
+// los dos ejes, un motor frenado se resiste y traba la prueba.
+void arrancarMotor(Motor &motor, bool avanza) {
+  if (motor.enMarcha) motorMover(motor, avanza, PWM_ARRANQUE);
+  else                motorSoltar(motor);
+}
+
 void cobertorAbrir() {
-  iniciarMovimiento(COB_ABRIENDO, true, tiempoAbrirDecimas, '-');
+  iniciarMovimiento(COB_ABRIENDO, true,
+                    motorA.tiempoAbrirDecimas, motorB.tiempoAbrirDecimas, '-');
 }
 
 void cobertorCerrar() {
-  iniciarMovimiento(COB_CERRANDO, false, tiempoCerrarDecimas, '-');
+  iniciarMovimiento(COB_CERRANDO, false,
+                    motorA.tiempoCerrarDecimas, motorB.tiempoCerrarDecimas, '-');
 }
 
 // Prueba de taller: un motor solo, en la dirección de ABRIR, que es la
-// referencia con la que se calibran los sentidos.
+// referencia con la que se calibran los sentidos. El otro va en 0, o sea que ni
+// siquiera arranca.
 void probarMotor(char cual, uint16_t decimas) {
-  iniciarMovimiento(COB_PRUEBA, true, decimas, cual);
+  iniciarMovimiento(COB_PRUEBA, true,
+                    (cual == 'A') ? decimas : 0,
+                    (cual == 'B') ? decimas : 0,
+                    cual);
 }
 
 // Frena los dos motores y deja la máquina de estados en reposo. No decide nada
@@ -2016,6 +2110,8 @@ void detenerCobertor() {
   estadoCobertor  = COB_PARADO;
   motorEnPrueba   = '-';
   arranqueEnCurso = false;
+  motorA.enMarcha = false;   // por si se corta a mano antes de que llegue su hora
+  motorB.enMarcha = false;
   cobertorFrenar();
 }
 
@@ -2045,8 +2141,16 @@ void cobertorParar() {
 void actualizarCobertor() {
   if (estadoCobertor == COB_PARADO) return;
 
-  // Fin de la patada de arranque: los motores ya rompieron la inercia, así que
-  // pasan a la velocidad de régimen. Vale para los tres movimientos.
+  // 1) LA HORA DE CADA MOTOR, PRIMERO.
+  //
+  // Va antes que el fin de la patada de arranque a propósito: si un motor tiene
+  // un tiempo más corto que la patada, tiene que frenar y QUEDARSE frenado. Al
+  // revés, el fin de la patada le volvería a levantar la habilitación a un motor
+  // que ya había terminado, y giraría de más.
+  frenarSiLeLlegoLaHora(motorA);
+  frenarSiLeLlegoLaHora(motorB);
+
+  // 2) Fin de la patada de arranque, para los que siguen girando.
   if (arranqueEnCurso && millis() - inicioMovimientoCobertor >= ARRANQUE_MS) {
     aplicarVelocidadDeRegimen();
     arranqueEnCurso = false;
@@ -2057,22 +2161,20 @@ void actualizarCobertor() {
     Serial.println("%");
   }
 
-  // UN SOLO corte por tiempo para los tres movimientos.
+  // 3) El movimiento termina cuando NO QUEDA NINGUNO en marcha.
   //
-  // Antes había dos: `duracionMovimientoMs` para abrir y cerrar, y una constante
-  // aparte para la prueba de taller. Como probarMotor() no tocaba la variable,
-  // ésta se quedaba con los segundos del último /cobertor_abrir, y bastaba con
-  // que el corte tomara la rama equivocada para que una prueba de 2 segundos
-  // durara los 10 de una apertura. Con un único reloj y una única duración ese
-  // error no puede volver a existir: cada movimiento declara cuánto dura y el
-  // estado sólo decide QUÉ hacer al terminar, nunca CUÁNDO.
-  if (millis() - inicioMovimientoCobertor < duracionMovimientoMs) return;
+  // Cada motor lleva su propio reloj desde el 2026-08-20, porque con el hilo
+  // atado entre los dos ejes a veces no alcanza con que uno vaya más despacio:
+  // hace falta que arranque igual y se detenga antes. La regla de fondo del
+  // rediseño del 13 de agosto sigue intacta: el ESTADO decide QUÉ hacer al
+  // terminar, nunca CUÁNDO. El cuándo es, para cada motor, su propia duración.
+  if (motorA.enMarcha || motorB.enMarcha) return;
 
   // Se guardan antes de detener, porque detenerCobertor() los limpia.
-  const EstadoCobertor loQueHacia   = estadoCobertor;
-  const char           motorProbado = motorEnPrueba;
-  const unsigned long  duracionReal = millis() - inicioMovimientoCobertor;
-  const unsigned long  duracionPedida = duracionMovimientoMs;
+  const EstadoCobertor loQueHacia     = estadoCobertor;
+  const char           motorProbado   = motorEnPrueba;
+  const unsigned long  duracionReal   = millis() - inicioMovimientoCobertor;
+  const unsigned long  duracionPedida = max(motorA.duracionMs, motorB.duracionMs);
 
   // La prueba de taller no mueve la lona: no toca la posición ni avisa por
   // Telegram, sólo informa por el Monitor Serie.
@@ -2080,7 +2182,7 @@ void actualizarCobertor() {
     detenerCobertor();
     Serial.print(">>> Prueba del motor ");
     Serial.print(motorProbado);
-    Serial.print(" terminada — duro ");
+    Serial.print(" terminada - duro ");
     Serial.print(duracionReal);
     Serial.print(" ms de los ");
     Serial.print(duracionPedida);
@@ -2097,13 +2199,32 @@ void actualizarCobertor() {
   // o si el motor se frenó solo mientras el programa seguía contando.
   Serial.print(">>> Cobertor: ");
   Serial.print(estabaAbriendo ? "ABIERTO" : "CERRADO");
-  Serial.print(" — duro ");
+  Serial.print(" - duro ");
   Serial.print(duracionReal);
   Serial.print(" ms de los ");
   Serial.print(duracionPedida);
-  Serial.println(" ms pedidos");
+  Serial.println(" ms pedidos (el mas largo de los dos motores)");
 
   avisarCobertor(estabaAbriendo ? "Cobertor ABIERTO ✅" : "Cobertor CERRADO ✅");
+}
+
+// Frena un motor cuando se le cumplió SU tiempo. El que termina primero queda
+// frenado mientras el otro sigue girando: eso es lo que permite compensar que
+// los dos carretes no recorran lo mismo.
+void frenarSiLeLlegoLaHora(Motor &motor) {
+  if (!motor.enMarcha) return;
+  if (millis() - inicioMovimientoCobertor < motor.duracionMs) return;
+
+  motorFrenar(motor);
+  motor.enMarcha = false;
+
+  Serial.print(">>> Motor ");
+  Serial.print(motor.nombre);
+  Serial.print(": freno a los ");
+  Serial.print(millis() - inicioMovimientoCobertor);
+  Serial.print(" ms de los ");
+  Serial.print(motor.duracionMs);
+  Serial.println(" ms que le tocaban");
 }
 
 // Guarda a quién hay que avisarle cuando termine el movimiento. Se llama SIEMPRE
@@ -2696,11 +2817,13 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
       recordarChatDelCobertor(chat_id);
       if (abrir) cobertorAbrir(); else cobertorCerrar();
 
-      telegramEnviar(chat_id, String(abrir ? "Abriendo" : "Cerrando") +
-                              " el cobertor durante " +
-                              segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
-                              " segundos.\nLos dos motores giran juntos. "
-                              "Te aviso cuando termine.\n"
+      telegramEnviar(chat_id, String(abrir ? "Abriendo" : "Cerrando") + " el cobertor.\n"
+                              "Motor A: " + segundosTexto(abrir ? motorA.tiempoAbrirDecimas
+                                                                : motorA.tiempoCerrarDecimas) + " s\n"
+                              "Motor B: " + segundosTexto(abrir ? motorB.tiempoAbrirDecimas
+                                                                : motorB.tiempoCerrarDecimas) + " s\n\n"
+                              "Los dos giran para el mismo lado; el que termina antes frena y "
+                              "espera al otro.\nTe aviso cuando termine.\n"
                               "Para frenar antes: /cobertor_parar");
     }
   }
@@ -2841,35 +2964,51 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
                               "/velocidad 35\n/velocidad_abrir 40 30\n/velocidad_cerrar 45 35");
     }
   }
-  // Cuánto dura cada movimiento. Los dos comandos comparten cuerpo porque sólo
-  // cambia a cuál de los dos tiempos le pegan.
-  else if (text.startsWith("/tiempo_abrir") || text.startsWith("/tiempo_cerrar")) {
-    const bool abrir = text.startsWith("/tiempo_abrir");
-    String arg = text.substring(abrir ? 13 : 14);   // el largo de cada comando
-    arg.trim();
-    const uint16_t decimas = leerTiempoEnDecimas(arg);
-    const String cual = abrir ? "abrir" : "cerrar";
+  // --- Tiempos del cobertor ---------------------------------------------
+  //
+  // Cuánto gira cada motor en cada movimiento. Son CUATRO, igual que las
+  // velocidades y por el mismo motivo mecánico: los dos carretes no recorren lo
+  // mismo, y a veces no alcanza con que uno vaya más despacio — hace falta que
+  // arranque igual y se detenga antes.
+  //
+  // ⚠️ Se compara el comando EXACTO, como en las velocidades: `/tiempo_abrir`
+  // empieza con `/tiempo_`, y confiar en el orden de los if para distinguir
+  // comandos es exactamente la trampa que ya nos mordió una vez.
+  else if (comandoDe(text).startsWith("/tiempo_")) {
+    const String comando = comandoDe(text);
 
-    if (arg.length() == 0) {
-      telegramEnviar(chat_id, "Tiempo para " + cual + ": " +
-                              segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
-                              " segundos.\nPara cambiarlo: /tiempo_" + cual + " 4.5");
-    } else if (decimas < TIEMPO_COBERTOR_MINIMO || decimas > TIEMPO_COBERTOR_MAXIMO) {
-      telegramEnviar(chat_id, "Valor invalido: usa un numero entre " +
-                              segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
-                              segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
-                              "Se admiten decimales: /tiempo_" + cual + " 4.5");
-    } else {
-      if (abrir) {
-        tiempoAbrirDecimas = decimas;
-        preferencias.putUShort("tAbrirDec", tiempoAbrirDecimas);
+    if (comando == "/tiempo_abrir" || comando == "/tiempo_cerrar") {
+      const bool alAbrir = (comando == "/tiempo_abrir");
+      String argumentos = text.substring(comando.length());
+      argumentos.trim();
+
+      // Acepta uno o dos números, con coma o punto: con uno, los dos motores
+      // giran lo mismo en ese movimiento; con dos, el primero es el A.
+      uint16_t paraA = 0, paraB = 0;
+      const int cuantos = leerDosTiempos(argumentos, paraA, paraB);
+
+      if (cuantos == 0) {
+        telegramEnviar(chat_id, "Tiempos del cobertor:\n" + tablaDeTiempos() +
+                                "\n\nLos dos motores: " + comando + " 4.5" +
+                                "\nCada uno (A y B): " + comando + " 4.5 5");
+      } else if (!tiempoValido(paraA) || (cuantos == 2 && !tiempoValido(paraB))) {
+        telegramEnviar(chat_id, "Valor invalido: usa un numero entre " +
+                                segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
+                                segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
+                                "Se admiten decimales: " + comando + " 4.5 5");
       } else {
-        tiempoCerrarDecimas = decimas;
-        preferencias.putUShort("tCerrarDec", tiempoCerrarDecimas);
+        if (cuantos == 1) paraB = paraA;
+        guardarTiempo(motorA, alAbrir, paraA);
+        guardarTiempo(motorB, alAbrir, paraB);
+        telegramEnviar(chat_id, String("Tiempos al ") + (alAbrir ? "ABRIR" : "CERRAR") +
+                                ": A " + segundosTexto(paraA) + " s | B " + segundosTexto(paraB) +
+                                " s. Guardados: sobreviven reinicios.\n\n" + tablaDeTiempos() +
+                                "\n\nProbalo con /cobertor_" + (alAbrir ? "abrir" : "cerrar") + ".");
       }
-      telegramEnviar(chat_id, "Tiempo para " + cual + ": " + segundosTexto(decimas) +
-                              " segundos. Guardado: sobrevive reinicios.\n"
-                              "Probalo con /cobertor_" + cual + ".");
+    }
+    else {
+      telegramEnviar(chat_id, "No conozco " + comando + ".\n\nLos tiempos se ajustan con:\n"
+                              "/tiempo_abrir 4.5 5\n/tiempo_cerrar 5 5.5");
     }
   }
   // Invierte el sentido del COBERTOR. Sólo toca /cobertor_abrir y
@@ -3077,8 +3216,7 @@ String armarStatus() {
   s += (hayMusica ? "musica detectada" : "silencio");
   s += "\n";
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
-  s += "Tiempos: abrir " + segundosTexto(tiempoAbrirDecimas) + " s | cerrar " +
-       segundosTexto(tiempoCerrarDecimas) + " s\n";
+  s += "Tiempos:\n" + tablaDeTiempos() + "\n";
   s += "Velocidades:\n" + tablaDeVelocidades() + "\n";
   s += "Cobertor al ABRIR: los 2 motores " + giroTexto(sentidoDelCobertor(true)) + "\n";
   s += "Pruebas: motor A " + giroTexto(sentidoDeLaPrueba('A')) +

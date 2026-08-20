@@ -1003,3 +1003,46 @@ en el L298N (`OUT3` ↔ `OUT4`), con la fuente apagada, y está así a propósit
 - **Opus 5**: las cuatro velocidades, el despacho por palabra completa, la validación de argumentos,
   la auditoría del sentido de giro, carga del firmware y documentación.
 
+### Sesión 2026-08-20 (parte 5) — Un tiempo para cada motor, y el orden que importa
+
+Espejo de la parte 4, ahora con los tiempos: `/tiempo_abrir 4.5 5` y `/tiempo_cerrar 5 5.5`, primero
+el A y después el B, con un solo número para dejar los dos iguales. Cuatro tiempos y cuatro
+velocidades, con la misma forma de comando y la misma tabla en cada respuesta.
+
+Lo interesante no fueron los comandos sino **la máquina de estados**, que se había rehecho el 13 de
+agosto justamente para que hubiera UN SOLO corte por tiempo. Ahora son dos, y había que extenderla
+sin reintroducir la clase de error que ese rediseño eliminó.
+
+Quedó así: cada motor lleva su `duracionMs` y su `enMarcha`; el que llega a su hora frena y se queda
+frenado; el movimiento termina cuando no queda ninguno en marcha. **La regla de fondo no cambió**:
+el estado decide QUÉ hacer al terminar, nunca CUÁNDO — el cuándo es, para cada motor, su propia
+duración.
+
+**El detalle que hay que entender del orden de las tres etapas del loop**: la hora de cada motor se
+revisa ANTES del fin de la patada de arranque. Si fuera al revés, un motor con un tiempo más corto
+que la patada (300 ms) frenaría correctamente y, en la misma vuelta, el fin de la patada le
+volvería a levantar la habilitación: giraría de más. Está escrito en el código con el porqué, porque
+es exactamente el tipo de cosa que alguien "ordena" seis meses después sin saber que la rompe.
+
+**Verificado en hardware**, no de palabra:
+
+```
+>>> Arranca ABRIR | A 3.5 s | B 3.5 s | t=113228
+>>> Fin de la patada de arranque: motor A a 40% | motor B a 80%
+>>> Motor A: freno a los 3503 ms de los 3500 ms que le tocaban
+>>> Motor B: freno a los 3504 ms de los 3500 ms que le tocaban
+>>> Cobertor: ABIERTO - duro 3504 ms de los 3500 ms pedidos (el mas largo de los dos motores)
+```
+
+Tres y cuatro milésimas de error, cada motor con su propio reloj. Los tres formatos de comando
+(`/tiempo_cerrar 4 3`, `/tiempo_cerrar 4`, `/tiempo_cerrar 3 4`) fueron aceptados.
+
+**De paso se arregló la herramienta de medición**: la captura del puerto serie leía con
+`ReadExisting()` en un bucle apretado y devolvía bloques de 32 bytes repetidos, lo que ensuciaba los
+registros y en un momento hizo dudar del ESP32 cuando el problema era del lector. Ahora lee por
+líneas.
+
+#### Atribución por modelo (sesión 2026-08-20, parte 5)
+- **Opus 5**: los cuatro tiempos, la extensión de la máquina de estados, la verificación en hardware
+  y la documentación.
+

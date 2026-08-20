@@ -8,6 +8,48 @@
 
 ---
 
+## v5.8 — 2026-08-20 · Un tiempo para cada motor, en cada sentido
+
+El espejo exacto de las velocidades de la v5.7, y por el mismo motivo mecánico: los dos carretes no
+recorren lo mismo, y a veces no alcanza con que uno vaya más despacio — hace falta que arranque
+igual y **se detenga antes**.
+
+### Agregado
+- **`/tiempo_abrir 4.5 5` y `/tiempo_cerrar 5 5.5`**: el primer número es el motor A y el segundo el
+  B. Con un solo número, los dos motores giran lo mismo en ese movimiento. Siguen aceptando
+  decimales, con coma o punto.
+- La tabla de los cuatro tiempos aparece en `/status` y en cada respuesta de ajuste, igual que la de
+  velocidades.
+- El aviso de `/cobertor_abrir` informa **cuánto va a girar cada motor**, y el Monitor Serie deja el
+  registro de cada uno por separado.
+
+### Cambiado — la máquina de estados
+- **El corte por tiempo pasó de uno a dos**: cada motor tiene su reloj, el que termina primero frena
+  y **se queda frenado**, y el movimiento se da por terminado cuando no queda ninguno girando.
+- **El orden dentro del loop importa y está documentado**: primero se revisa la hora de cada motor y
+  recién después el fin de la patada de arranque. Al revés, un motor con un tiempo más corto que la
+  patada (300 ms) frenaría y el fin de la patada volvería a levantarle la habilitación: giraría de
+  más.
+- La regla del rediseño del 13 de agosto sigue intacta: **el estado decide QUÉ hacer al terminar,
+  nunca CUÁNDO**. El cuándo es, para cada motor, su propia duración.
+
+### Verificado en hardware (2026-08-20)
+```
+>>> Arranca ABRIR | A 3.5 s | B 3.5 s
+>>> Motor A: freno a los 3503 ms de los 3500 ms que le tocaban
+>>> Motor B: freno a los 3504 ms de los 3500 ms que le tocaban
+>>> Cobertor: ABIERTO - duro 3504 ms de los 3500 ms pedidos
+```
+Tres y cuatro milésimas de error, cada motor con su propio reloj.
+
+### Ojo al actualizar
+- **La calibración con la lona no se pierde**: las claves viejas (`tAbrirDec`, `tCerrarDec`) se leen
+  primero y sirven de punto de partida para los dos motores.
+- El sentido de giro **no se tocó**: la velocidad viaja por el pin de habilitación y el tiempo decide
+  hasta cuándo, pero el sentido va por otros pines y se calcula una sola vez para los dos motores.
+
+---
+
 ## v5.7 — 2026-08-20 · Cuatro velocidades: cada motor, en cada sentido
 
 Continuación inmediata de la v5.6. Con la lona puesta apareció el resto del problema: no alcanza

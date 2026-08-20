@@ -39,11 +39,14 @@ desde un bot de Telegram. Todo corre en un solo ESP32 con el programa
 - **Los dos motores giran juntos**, en la misma dirección: el lazo se traba si uno empuja y el
   otro queda suelto
 - **El recorrido se mide por TIEMPO**, no por sensor, y se calibra desde Telegram
-  (`/tiempo_abrir`, `/tiempo_cerrar`), con un valor propio para cada movimiento
+  (`/tiempo_abrir`, `/tiempo_cerrar`), con **un valor propio para cada motor y cada movimiento**:
+  son cuatro. El que termina primero frena y espera al otro
 - **Los dos motores reciben siempre la misma polaridad**: es imposible que giren uno contra el
   otro. `/cobertor_sentido` invierte el conjunto y elige cuál dirección es "abrir"
-- Arrancan con una **patada al 100 %** y siguen a la velocidad de `/velocidad`; al terminar
-  **frenan en seco**
+- Arrancan con una **patada al 100 %** y siguen a **su** velocidad de régimen —también cuatro:
+  cada motor tiene la suya para abrir y para cerrar (`/velocidad_abrir`, `/velocidad_cerrar`)—; al
+  terminar **frenan en seco**. Los cuatro tiempos y las cuatro velocidades existen porque los dos
+  carretes no recorren lo mismo: el hilo pasa de uno al otro y los diámetros cambian
 - 2 fines de carrera **informan la posición** en `/status`; desde el 2026-08-13 **no cortan el
   movimiento**
 - Controlable desde Telegram: /cobertor_abrir, /cobertor_cerrar, /cobertor_parar
@@ -58,8 +61,8 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 - Prueba de taller: /motor_a, /motor_b (mueven un motor solo; `/motor_a 5` para elegir los
   segundos, 2 por omisión)
 - Efectos de luces: /efecto 1 (espectro) | 2 (mezcla) | 3 (cometa) | 4 (arcoíris)
-- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (las cuatro de una, en %), /velocidad_abrir 40 30 y /velocidad_cerrar 45 35 (motor A y motor B para ese movimiento), /tiempo_abrir 4.5 y
-  /tiempo_cerrar 5 (duración del recorrido, admite decimales), /cobertor_sentido (invertir el
+- Ajustes: /temperatura 28 (objetivo), /velocidad 35 (las cuatro de una, en %), /velocidad_abrir 40 30 y /velocidad_cerrar 45 35 (motor A y motor B para ese movimiento), /tiempo_abrir 4.5 5 y
+  /tiempo_cerrar 5 5.5 (segundos del motor A y del B, admite decimales), /cobertor_sentido (invertir el
   cobertor), /sentido_a y /sentido_b (invertir sólo esa prueba), /brillo 70, /leds 21,
   /corriente 120, /orden, /piso 12 — todos guardados en NVS
 - Consultas: /status, /temp, /audio, /espectro, /diag, /trace, /onda, /luces_test, /ip
