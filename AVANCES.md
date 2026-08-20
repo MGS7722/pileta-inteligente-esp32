@@ -763,9 +763,64 @@ durante la espera la tarea no cede CPU y hay que verificar el watchdog del núcl
 **Gate**: compilado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de flash y 16 %
 de RAM**, igual que antes. El único warning es el conocido de LiquidCrystal I2C.
 
-**Pendiente de esta sesión**: cargar el firmware al ESP32 y verificar en vivo con el Monitor
-Serie que `/help` deja de duplicarse y que el tiempo de respuesta baja de los 8000 ms. No se
-cargó todavía porque Mariano estaba con el armado físico y la carga reinicia la placa.
+**Verificación en hardware el mismo día — y el resultado fue NEGATIVO**
+
+Se cargó la v5.4 y se capturó el Monitor Serie mientras Mariano mandaba `/help` desde el celular.
+El bot **siguió respondiendo tres veces** el mismo mensaje, y el log dio los números exactos:
+
+```
+----- Telegram -----
+De: Mariano
+Msg: /help
+Tiempos: consulta 4421 ms | respuesta 16805 ms
+```
+
+Dos cosas quedaron claras de una:
+
+1. **El comando llegó UNA sola vez** (un solo bloque `----- Telegram -----`), así que la
+   duplicación es de salida, como se había deducido. Eso se confirmó.
+2. **16805 ms de respuesta son 8000 + 8000**: los DOS mensajes de la ayuda agotaron su bucle de
+   reintentos. Subir el buffer a 4096 **no evitó el bucle**.
+
+Y el dato que tira abajo la hipótesis del tamaño: **la parte 2 de la ayuda son 486 bytes y también
+falló**. Un mensaje de 486 bytes no puede truncarse contra un buffer de 4096. El truncado era real
+y valía arreglarlo, pero **no era la causa dominante**.
+
+**La causa que sí explica todo** está más abajo, en cómo la librería lee la respuesta HTTP:
+
+```cpp
+while (millis() - now < longPoll * 1000 + waitForResponse) {
+    while (client->available()) { ...leer... }
+    if (responseReceived) break;      // <-- corta apenas leyó ALGO
+}
+```
+
+`responseReceived` se pone en verdadero con el primer carácter leído, así que la función corta
+apenas drena el primer bloque disponible. Si los encabezados HTTP llegan en un segmento TLS y el
+cuerpo JSON en el siguiente —lo normal en cuanto la respuesta crece—, se queda con los
+encabezados y un cuerpo vacío o partido. `checkForOkResponse()` no puede confirmar nada y
+`sendPostMessage()` entra igual en sus 8 segundos de reenvíos. Es una **carrera**, y por eso el
+síntoma era intermitente ("a veces") y empeora con los mensajes largos.
+
+No hay salida por la API de la librería: `sendSimpleMessage()` tiene exactamente el mismo bucle de
+8 segundos. Acortar los mensajes tampoco sirve, porque ya falla con 486 bytes.
+
+**Lo propuesto**: que el ENVÍO deje de pasar por la librería. Una función propia que arma el POST
+a `api.telegram.org`, pide `Connection: close`, lee hasta que el servidor cierra —sin adivinar
+dónde termina el cuerpo— y **no reintenta nunca**: un fallo se registra en el Monitor Serie y se
+sigue, así un mensaje no puede duplicarse por diseño. `getUpdates()` seguiría siendo de la
+librería, que para lo que entra funciona bien. Queda en `docs/PENDIENTES.md` #14, esperando el OK.
+
+**Lo que SÍ quedó funcionando de la v5.4**: la cola vieja ya no se ejecuta al encender, `/status`
+informa la memoria, y la instrumentación nueva — que es la que permitió medir todo esto en cinco
+minutos en vez de a ciegas.
+
+**Y un hallazgo nuevo de la instrumentación**: en la red de la pileta (`UA-Alumnos`), cada consulta
+paga entre **3,0 y 6,7 segundos de saludo TLS**, medido decenas de veces. Es bastante peor que los
+~3 s del taller y sube muchísimo la prioridad del long polling (`docs/PENDIENTES.md` #7c): con la
+conexión abierta ese costo se pagaría una vez cada 25 s en lugar de en cada vuelta.
+
+**Pendiente de esta sesión**: implementar el envío propio (#14) y volver a medir.
 
 #### Atribución por modelo (sesión 2026-08-20)
 - **Opus 5**: auditoría del camino completo de Telegram (nuestro código + librería 1.3.0 +

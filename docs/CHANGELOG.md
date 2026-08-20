@@ -8,13 +8,21 @@
 
 ---
 
-## v5.4 — 2026-08-20 · El bot deja de trabarse: el buffer de Telegram y la cola vieja
+## v5.4 — 2026-08-20 · Telegram: la cola vieja y el buffer (el bucle de 8 s NO quedo resuelto)
+
+> ⚠️ **Verificado en hardware el mismo dia y el resultado fue NEGATIVO para la parte principal.**
+> Subir el buffer no alcanzo: `/help` siguio llegando tres veces y el Monitor Serie midio
+> `consulta 4421 ms | respuesta 16805 ms` — los dos mensajes agotaron sus 8 segundos de
+> reintentos. El truncado era real y valia arreglarlo, pero **no era la causa dominante**.
+> La causa de fondo esta mas abajo en la libreria y se detalla en `AVANCES.md` y en
+> `docs/PENDIENTES.md` #14. Lo que si quedo resuelto de esta version es la cola vieja, la
+> instrumentacion y la memoria en `/status`.
 
 El bot tardaba muchísimo en contestar y a veces mandaba la misma respuesta dos veces, aunque el
 comando se ejecutara una sola. No era el WiFi ni el ESP32 quedándose sin memoria: era el buffer
 de la librería de Telegram.
 
-### Arreglado
+### Intentado, sin exito (el bucle de 8 segundos sigue)
 - **El bucle de reenvío de 8 segundos.** La librería trae un buffer de 1500 bytes
   (`maxMessageLength`) que usa tanto para armar el mensaje como para leer la confirmación. Y
   Telegram, al confirmar un envío, **devuelve el texto entero** más unos 400 bytes con los datos
