@@ -8,6 +8,43 @@
 
 ---
 
+## v5.7 — 2026-08-20 · Cuatro velocidades: cada motor, en cada sentido
+
+Continuación inmediata de la v5.6. Con la lona puesta apareció el resto del problema: no alcanza
+con que cada motor tenga su velocidad, porque **la compensación se da vuelta entre abrir y
+cerrar**. Al abrir, el carrete lleno es uno; al cerrar es el otro, así que el motor que sobra de
+velocidad cambia. Lo que dejaba el hilo parejo al abrir lo dejaba flojo al cerrar.
+
+### Agregado
+- **`/velocidad_abrir 40 30` y `/velocidad_cerrar 45 35`**: el primer número es el motor A y el
+  segundo el B. Con un solo número, los dos motores quedan igual para ese movimiento.
+- **`/velocidad 35`** pone las cuatro de una, que es como conviene empezar a calibrar.
+- Los tres comandos, sin argumentos, muestran **la tabla completa de las cuatro velocidades**, y
+  también aparece en `/status` y en cada respuesta de ajuste. Ver los cuatro números juntos es lo
+  que hace entendible un ajuste que si no se vuelve un laberinto.
+
+### Quitado
+- `/velocidad_a` y `/velocidad_b` (que habían durado una versión). Ya no tienen sentido: la
+  velocidad de un motor **depende del movimiento**. Además `/velocidad_a` es prefijo de
+  `/velocidad_abrir`, y convivir con el despacho por `startsWith` era una trampa esperando.
+
+### Detalles que importan
+- **El despacho de estos comandos compara la palabra completa**, no `startsWith()`. No es
+  cosmético: `/velocidad_abrir` empieza con `/velocidad`, así que con `startsWith()` el orden de
+  los `if` decidiría qué significa lo que escribe el usuario, y un comando nuevo podría robarle los
+  mensajes a otro sin que nadie lo note.
+- **Los argumentos se validan como dígitos de verdad**, en vez de confiar en `toInt()`, que ante
+  cualquier basura devuelve 0 en silencio. Con velocidades, un 0 que nadie pidió es un motor que no
+  arranca y media hora buscando el problema en la mecánica.
+- **El sentido de giro no se tocó, y no puede tocarse desde acá**: la velocidad viaja por el pin de
+  habilitación (PWM) y el sentido por los pines de entrada. Son caminos distintos.
+
+### Ojo al actualizar
+- **La calibración anterior no se pierde.** Las claves viejas se leen en cadena y sirven de punto
+  de partida: `velCobertor` → `velMotorX` → `velAbrirX` / `velCerrarX`.
+
+---
+
 ## v5.6 — 2026-08-20 · Una velocidad para cada motor
 
 ### Agregado

@@ -949,3 +949,57 @@ punta a punta. La herramienta ya está; el número lo da la pileta.
 - **Opus 5**: velocidad por motor, revisión de conflictos con el despacho de comandos y la
   migración de NVS, carga del firmware y documentación.
 
+### Sesión 2026-08-20 (parte 4) — Cuatro velocidades, y la verificación del sentido de giro
+
+Con la lona puesta apareció el resto del problema de la parte 3: **la compensación se da vuelta
+entre abrir y cerrar**. Al abrir, el carrete lleno es uno; al cerrar es el otro, así que el motor
+que sobra de velocidad cambia. Lo que dejaba el hilo parejo al abrir lo dejaba flojo al cerrar. Son
+cuatro números, no dos.
+
+Quedó así: `/velocidad_abrir 40 30` y `/velocidad_cerrar 45 35` (primero el A, después el B; con un
+solo número los dos quedan igual), y `/velocidad 35` pone las cuatro de una. Los tres, sin
+argumentos, muestran la tabla completa — que también está en `/status`.
+
+**Se quitaron `/velocidad_a` y `/velocidad_b`**, que habían durado una sola versión: la velocidad de
+un motor ahora depende del movimiento, así que por sí sola no significa nada. Y había una razón
+extra, que es la trampa que enseñó esta parte: **`/velocidad_a` es prefijo de `/velocidad_abrir`**.
+Con el despacho por `startsWith()` que usa el resto del programa, `/velocidad_abrir 40` habría hecho
+match con `/velocidad_a` según el orden de los `if`. Por eso estos comandos **comparan la palabra
+completa** (`comandoDe()`), y así agregar un comando nuevo mañana no puede robarle los mensajes a
+otro.
+
+También se dejó de confiar en `toInt()` para los argumentos: ante cualquier basura devuelve 0 en
+silencio, y con velocidades un 0 que nadie pidió es un motor que no arranca y media hora buscando el
+problema en la mecánica. Ahora se exige que sean dígitos de verdad.
+
+**La verificación del sentido de giro (pedido de Mariano en el momento)**
+
+Preguntó si algo del sentido se había cambiado, porque necesita que **los dos motores giren para el
+mismo lado siempre**: horario al abrir y antihorario al cerrar. Se auditó el código entero en vez de
+contestar de memoria, y el resultado es que la garantía es **estructural**:
+
+- `motorMover()` es la ÚNICA función que toca los pines de sentido, y se la llama en cuatro lugares:
+  dos en la rama de prueba (un motor cada uno, excluyentes) y dos en la del cobertor, que reciben
+  **literalmente la misma variable** `avanza`.
+- `motorCambiarVelocidad()` —lo único que tocaron las partes 3 y 4— escribe **sólo el pin de
+  habilitación**, que es el del PWM. El sentido viaja por otros pines. **Cambiar velocidades no
+  puede cambiar el giro**, por caminos separados.
+- `motorFrenar()` y `motorSoltar()` ponen las dos entradas en bajo: tampoco definen sentido.
+
+O sea: no existe estado del programa en el que el cobertor haga girar los motores en sentidos
+eléctricos opuestos. Lo que sí elige el usuario es **cuál de las dos direcciones se llama "abrir"**,
+con `/cobertor_sentido`, y eso mueve las dos juntas: si abrir pasa a ser horario, cerrar queda
+antihorario automáticamente. `/status` lo informa en una sola línea —"los 2 motores a la derecha
+(horario)"— justamente porque es un solo dato para los dos.
+
+Y la excepción que no es del software: si los motores están **montados espejados**, la misma
+polaridad eléctrica se ve como giros opuestos. Eso se corrige invirtiendo los dos cables de un motor
+en el L298N (`OUT3` ↔ `OUT4`), con la fuente apagada, y está así a propósito desde el 2026-08-13.
+
+**Gate**: compilado y cargado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de flash y
+16 % de RAM**, `Hash of data verified`.
+
+#### Atribución por modelo (sesión 2026-08-20, parte 4)
+- **Opus 5**: las cuatro velocidades, el despacho por palabra completa, la validación de argumentos,
+  la auditoría del sentido de giro, carga del firmware y documentación.
+

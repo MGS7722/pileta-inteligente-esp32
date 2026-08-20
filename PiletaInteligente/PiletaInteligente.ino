@@ -393,16 +393,24 @@ struct Motor {
   const uint8_t pinHabilitacion;   // el que lleva el PWM
   const char    nombre;            // 'A' o 'B', para los mensajes y la clave en NVS
 
-  // PWM de régimen PROPIO de este motor, 0-255, guardado en NVS. Lo escribe
-  // Telegram (núcleo 0) y lo lee el movimiento (núcleo 1); como con numLeds, en
-  // el ESP32 escribir un entero alineado es atómico, así que nunca se lee un
-  // valor a medio escribir. Lo peor que puede pasar es que un cambio se note
-  // recién en el movimiento siguiente.
-  int           velocidad;
+  // PWM de régimen PROPIO de este motor, 0-255, guardados en NVS. Son DOS
+  // porque la compensación se da vuelta según el movimiento: al abrir, el
+  // carrete lleno es uno; al cerrar, es el otro, así que el motor que tiene que
+  // ir más despacio cambia. Con un solo par de valores, lo que dejaba el hilo
+  // parejo al abrir lo dejaba flojo al cerrar.
+  //
+  // Los escribe Telegram (núcleo 0) y los lee el movimiento (núcleo 1); como con
+  // numLeds, en el ESP32 escribir un entero alineado es atómico, así que nunca
+  // se lee un valor a medio escribir. Lo peor que puede pasar es que un cambio
+  // se note recién en el movimiento siguiente.
+  int           velocidadAbrir;
+  int           velocidadCerrar;
 };
 
-Motor motorA = { MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_EN, 'A', VELOCIDAD_DE_FABRICA };
-Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B', VELOCIDAD_DE_FABRICA };
+Motor motorA = { MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_EN, 'A',
+                 VELOCIDAD_DE_FABRICA, VELOCIDAD_DE_FABRICA };
+Motor motorB = { MOTOR_B_IN3, MOTOR_B_IN4, MOTOR_B_EN, 'B',
+                 VELOCIDAD_DE_FABRICA, VELOCIDAD_DE_FABRICA };
 
 // --- Dos sistemas de sentido, SEPARADOS y sin pisarse ---
 //
@@ -742,13 +750,20 @@ void setup() {
   pruebaAInvertida  = preferencias.getBool("pruebaAInv", pruebaAInvertida);
   pruebaBInvertida  = preferencias.getBool("pruebaBInv", pruebaBInvertida);
 
-  // La velocidad pasó de ser UNA a ser una por motor (2026-08-20). El valor
-  // viejo se lee primero y sirve de punto de partida para los dos, así una
-  // calibración hecha antes de este cambio NO se pierde al actualizar. Si además
-  // ya hay valores por motor, esos mandan.
-  const int velocidadGuardadaVieja = preferencias.getUChar("velCobertor", VELOCIDAD_DE_FABRICA);
-  motorA.velocidad = preferencias.getUChar("velMotorA", velocidadGuardadaVieja);
-  motorB.velocidad = preferencias.getUChar("velMotorB", velocidadGuardadaVieja);
+  // Las velocidades pasaron por dos cambios el 2026-08-20: primero de UNA sola a
+  // una POR MOTOR, y después a una por motor Y POR MOVIMIENTO. Las claves viejas
+  // se leen en cadena y sirven de punto de partida, así ninguna calibración
+  // hecha antes se pierde al actualizar; si ya existen las claves nuevas, mandan.
+  //
+  //   velCobertor  ->  velMotorX  ->  velAbrirX / velCerrarX
+  const int velocidadUnica = preferencias.getUChar("velCobertor", VELOCIDAD_DE_FABRICA);
+  const int velocidadDeA   = preferencias.getUChar("velMotorA", velocidadUnica);
+  const int velocidadDeB   = preferencias.getUChar("velMotorB", velocidadUnica);
+
+  motorA.velocidadAbrir  = preferencias.getUChar("velAbrirA",  velocidadDeA);
+  motorA.velocidadCerrar = preferencias.getUChar("velCerrarA", velocidadDeA);
+  motorB.velocidadAbrir  = preferencias.getUChar("velAbrirB",  velocidadDeB);
+  motorB.velocidadCerrar = preferencias.getUChar("velCerrarB", velocidadDeB);
 
   // Los valores guardados podrían venir de una versión anterior con otros
   // rangos: se acotan antes de usarlos, para que un número absurdo en memoria
@@ -760,8 +775,10 @@ void setup() {
   pisoRuidoBanda    = constrain(pisoRuidoBanda, 0, 200);
   tiempoAbrirDecimas  = constrain(tiempoAbrirDecimas,  TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
   tiempoCerrarDecimas = constrain(tiempoCerrarDecimas, TIEMPO_COBERTOR_MINIMO, TIEMPO_COBERTOR_MAXIMO);
-  motorA.velocidad    = constrain(motorA.velocidad, pwmDeVelocidadMinima(), 255);
-  motorB.velocidad    = constrain(motorB.velocidad, pwmDeVelocidadMinima(), 255);
+  motorA.velocidadAbrir  = constrain(motorA.velocidadAbrir,  pwmDeVelocidadMinima(), 255);
+  motorA.velocidadCerrar = constrain(motorA.velocidadCerrar, pwmDeVelocidadMinima(), 255);
+  motorB.velocidadAbrir  = constrain(motorB.velocidadAbrir,  pwmDeVelocidadMinima(), 255);
+  motorB.velocidadCerrar = constrain(motorB.velocidadCerrar, pwmDeVelocidadMinima(), 255);
 
   // Tira de luces (arranca APAGADA; se activa desde Telegram)
   tira.begin();
@@ -1745,8 +1762,18 @@ bool finDeCarreraTocado(int pin) {
 
 // La velocidad se guarda en PWM (0-255) porque es lo que entiende el L298N, pero
 // se muestra y se pide en porcentaje, que es lo que entiende cualquiera.
-int velocidadPorcentaje(const Motor &motor) {
-  return (motor.velocidad * 100) / 255;
+int porcentajeDePwm(int pwm) {
+  return (pwm * 100) / 255;
+}
+
+// Qué velocidad le toca a este motor en el movimiento que está en curso.
+//
+// La prueba de taller (/motor_a y /motor_b) usa la de ABRIR, porque esos
+// comandos mueven en ese sentido: es el mismo criterio con el que se eligió el
+// sentido de la prueba, y así lo que se mide en el banco es lo que después va a
+// pasar al abrir.
+int velocidadDelMovimiento(const Motor &motor) {
+  return (estadoCobertor == COB_CERRANDO) ? motor.velocidadCerrar : motor.velocidadAbrir;
 }
 
 // El piso de 20 % expresado en PWM. Se calcula acá una sola vez para que el
@@ -1755,15 +1782,29 @@ int pwmDeVelocidadMinima() {
   return (VELOCIDAD_MINIMA_PORCENTAJE * 255) / 100;
 }
 
-// Guarda la velocidad de UN motor, en el motor y en la memoria del ESP32. La
-// clave sale de su nombre ('A' o 'B'), así no hay dos listas que mantener en
-// sincronía ni forma de guardar lo de un motor bajo la clave del otro.
-void guardarVelocidad(Motor &motor, int porcentaje) {
-  motor.velocidad = (porcentaje * 255) / 100;
+// Guarda la velocidad de UN motor para UN movimiento, en el motor y en la
+// memoria del ESP32. La clave se arma con el movimiento y el nombre del motor,
+// así no hay una lista de claves que mantener en sincronía ni forma de guardar
+// lo de un motor bajo la clave del otro.
+void guardarVelocidad(Motor &motor, bool alAbrir, int porcentaje) {
+  const int pwm = (porcentaje * 255) / 100;
+  if (alAbrir) motor.velocidadAbrir  = pwm;
+  else         motor.velocidadCerrar = pwm;
 
-  char clave[12];
-  snprintf(clave, sizeof(clave), "velMotor%c", motor.nombre);
-  preferencias.putUChar(clave, (uint8_t)motor.velocidad);
+  char clave[14];
+  snprintf(clave, sizeof(clave), "vel%s%c", alAbrir ? "Abrir" : "Cerrar", motor.nombre);
+  preferencias.putUChar(clave, (uint8_t)pwm);
+}
+
+// La tabla completa de las cuatro velocidades. Va en /status, en las respuestas
+// de los comandos y cada vez que hay que mostrar cómo quedó algo: que el usuario
+// vea SIEMPRE los cuatro números juntos es lo que hace entendible un ajuste que
+// de otro modo se vuelve un laberinto de valores sueltos.
+String tablaDeVelocidades() {
+  return "Abrir:  A " + String(porcentajeDePwm(motorA.velocidadAbrir)) +
+         "% | B " + String(porcentajeDePwm(motorB.velocidadAbrir)) + "%\n" +
+         "Cerrar: A " + String(porcentajeDePwm(motorA.velocidadCerrar)) +
+         "% | B " + String(porcentajeDePwm(motorB.velocidadCerrar)) + "%";
 }
 
 // El mismo texto de error para los tres comandos de velocidad: una sola regla,
@@ -1776,6 +1817,52 @@ String textoVelocidadInvalida(const String &ejemplo) {
 
 bool velocidadValida(int porcentaje) {
   return porcentaje >= VELOCIDAD_MINIMA_PORCENTAJE && porcentaje <= 100;
+}
+
+// La primera palabra del mensaje, o sea el comando sin sus argumentos.
+//
+// Existe para poder comparar comandos por IGUALDAD en vez de por startsWith().
+// La diferencia no es cosmética: `/velocidad_abrir` empieza con `/velocidad`,
+// así que con startsWith() el orden de los if decide qué significa lo que
+// escribe el usuario, y agregar un comando mañana puede robarle los mensajes a
+// otro sin que nadie lo note.
+String comandoDe(const String &texto) {
+  const int espacio = texto.indexOf(' ');
+  return (espacio < 0) ? texto : texto.substring(0, espacio);
+}
+
+// Lee uno o dos números separados por espacios. Devuelve cuántos encontró (0, 1
+// o 2) y deja los valores en `primero` y `segundo`.
+//
+// Se valida que lo que hay sean dígitos de verdad en vez de confiar en toInt(),
+// que ante cualquier basura devuelve 0 en silencio: con velocidades, un 0 que
+// nadie pidió es un motor que no arranca y media hora buscando el problema en la
+// mecánica.
+int leerDosNumeros(const String &argumentos, int &primero, int &segundo) {
+  String texto = argumentos;
+  texto.trim();
+  if (texto.length() == 0) return 0;
+
+  const int espacio = texto.indexOf(' ');
+  const String parte1 = (espacio < 0) ? texto : texto.substring(0, espacio);
+  String parte2 = (espacio < 0) ? String("") : texto.substring(espacio + 1);
+  parte2.trim();
+
+  if (!soloDigitos(parte1)) return 0;
+  primero = parte1.toInt();
+
+  if (parte2.length() == 0) return 1;
+  if (!soloDigitos(parte2)) return 0;
+  segundo = parte2.toInt();
+  return 2;
+}
+
+bool soloDigitos(const String &texto) {
+  if (texto.length() == 0) return false;
+  for (size_t i = 0; i < texto.length(); i++) {
+    if (!isDigit(texto[i])) return false;
+  }
+  return true;
 }
 
 // --- Control de un motor -------------------------------------------------
@@ -1845,12 +1932,13 @@ void cobertorFrenar() {
 void aplicarVelocidadDeRegimen() {
   if (estadoCobertor == COB_PRUEBA) {
     Motor &motor = (motorEnPrueba == 'A') ? motorA : motorB;
-    motorCambiarVelocidad(motor, motor.velocidad);
+    motorCambiarVelocidad(motor, velocidadDelMovimiento(motor));
   } else {
-    // Cada uno baja a LA SUYA. Es el punto del cambio: con el hilo pasando de un
-    // carrete al otro, los dos al mismo PWM hacen que uno arrastre al otro.
-    motorCambiarVelocidad(motorA, motorA.velocidad);
-    motorCambiarVelocidad(motorB, motorB.velocidad);
+    // Cada uno baja a LA SUYA, y la suya depende de hacia dónde va. Con el hilo
+    // pasando de un carrete al otro, los dos al mismo PWM hacen que uno arrastre
+    // al otro — y cuál sobra se da vuelta entre abrir y cerrar.
+    motorCambiarVelocidad(motorA, velocidadDelMovimiento(motorA));
+    motorCambiarVelocidad(motorB, velocidadDelMovimiento(motorB));
   }
 }
 
@@ -1963,9 +2051,9 @@ void actualizarCobertor() {
     aplicarVelocidadDeRegimen();
     arranqueEnCurso = false;
     Serial.print(">>> Fin de la patada de arranque: motor A a ");
-    Serial.print(velocidadPorcentaje(motorA));
+    Serial.print(porcentajeDePwm(velocidadDelMovimiento(motorA)));
     Serial.print("% | motor B a ");
-    Serial.print(velocidadPorcentaje(motorB));
+    Serial.print(porcentajeDePwm(velocidadDelMovimiento(motorB)));
     Serial.println("%");
   }
 
@@ -2685,53 +2773,72 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
                               " C. Guardada: sobrevive reinicios.");
     }
   }
-  // Velocidad de UN motor. ⚠️ Va OBLIGATORIAMENTE antes de /velocidad: el
-  // despacho usa startsWith(), así que si /velocidad se evaluara primero también
-  // se quedaría con /velocidad_a y le pasaría "_a 50" a toInt(), que da 0.
-  else if (text.startsWith("/velocidad_a") || text.startsWith("/velocidad_b")) {
-    Motor &motor = text.startsWith("/velocidad_a") ? motorA : motorB;
-    const String comando = String("/velocidad_") + (char)tolower(motor.nombre);
+  // --- Velocidades del cobertor ---------------------------------------
+  //
+  // Son CUATRO números: cada motor tiene su velocidad para abrir y otra para
+  // cerrar. El motivo es mecánico: al abrir, el carrete lleno es uno; al cerrar
+  // es el otro, así que el motor que sobra de velocidad se da vuelta. Con un
+  // solo par de valores, lo que dejaba el hilo parejo al abrir lo dejaba flojo
+  // al cerrar.
+  //
+  // ⚠️ ACA SE COMPARA EL COMANDO EXACTO, no con startsWith() como el resto del
+  // despacho, y es a propósito: `/velocidad_abrir` EMPIEZA con `/velocidad`, asi
+  // que con startsWith() el orden de los if decidiría el significado de lo que
+  // escribe el usuario. Comparando la primera palabra completa, agregar un
+  // comando nuevo mañana no puede robarle los mensajes a otro.
+  else if (comandoDe(text).startsWith("/velocidad")) {
+    const String comando = comandoDe(text);
+    String argumentos = text.substring(comando.length());
+    argumentos.trim();
 
-    String arg = text.substring(comando.length());
-    arg.trim();
-    const int porcentaje = arg.toInt();
+    if (comando == "/velocidad_abrir" || comando == "/velocidad_cerrar") {
+      const bool alAbrir = (comando == "/velocidad_abrir");
 
-    if (arg.length() == 0) {
-      telegramEnviar(chat_id, String("Velocidad del motor ") + motor.nombre + ": " +
-                              String(velocidadPorcentaje(motor)) + "%.\nPara cambiarla: " +
-                              comando + " 40");
-    } else if (!velocidadValida(porcentaje)) {
-      telegramEnviar(chat_id, textoVelocidadInvalida(comando + " 40"));
-    } else {
-      guardarVelocidad(motor, porcentaje);
-      telegramEnviar(chat_id, String("Velocidad del motor ") + motor.nombre + ": " +
-                              String(porcentaje) + "%. Guardada: sobrevive reinicios.\n"
-                              "Ahora: A " + String(velocidadPorcentaje(motorA)) + "% | B " +
-                              String(velocidadPorcentaje(motorB)) + "%.\n"
-                              "Probala con /motor_" + (char)tolower(motor.nombre) + ".");
+      // Acepta uno o dos números: con uno, los dos motores quedan igual para ese
+      // movimiento; con dos, el primero es el A y el segundo el B.
+      int paraA = 0, paraB = 0;
+      const int cuantos = leerDosNumeros(argumentos, paraA, paraB);
+
+      if (cuantos == 0) {
+        telegramEnviar(chat_id, "Velocidades del cobertor:\n" + tablaDeVelocidades() +
+                                "\n\nLos dos motores: " + comando + " 40" +
+                                "\nCada uno (A y B): " + comando + " 40 30");
+      } else if (!velocidadValida(paraA) || (cuantos == 2 && !velocidadValida(paraB))) {
+        telegramEnviar(chat_id, textoVelocidadInvalida(comando + " 40 30"));
+      } else {
+        if (cuantos == 1) paraB = paraA;
+        guardarVelocidad(motorA, alAbrir, paraA);
+        guardarVelocidad(motorB, alAbrir, paraB);
+        telegramEnviar(chat_id, String("Velocidades al ") + (alAbrir ? "ABRIR" : "CERRAR") +
+                                ": A " + String(paraA) + "% | B " + String(paraB) +
+                                "%. Guardadas: sobreviven reinicios.\n\n" +
+                                tablaDeVelocidades());
+      }
     }
-  }
-  // Velocidad de LOS DOS a la vez, que es lo habitual: se calibra parejo y
-  // después, si el hilo pide que uno vaya más despacio, se retoca ese solo.
-  else if (text.startsWith("/velocidad")) {
-    String arg = text.substring(10);   // lo que viene después de "/velocidad"
-    arg.trim();
-    const int porcentaje = arg.toInt();
+    else if (comando == "/velocidad") {
+      const int porcentaje = argumentos.toInt();
 
-    if (arg.length() == 0) {
-      telegramEnviar(chat_id, "Velocidad de los motores:\n"
-                              "Motor A: " + String(velocidadPorcentaje(motorA)) + "%\n"
-                              "Motor B: " + String(velocidadPorcentaje(motorB)) + "%\n\n"
-                              "Los dos juntos: /velocidad 35\n"
-                              "Uno solo: /velocidad_a 40 o /velocidad_b 30");
-    } else if (!velocidadValida(porcentaje)) {
-      telegramEnviar(chat_id, textoVelocidadInvalida("/velocidad 35"));
-    } else {
-      guardarVelocidad(motorA, porcentaje);
-      guardarVelocidad(motorB, porcentaje);
-      telegramEnviar(chat_id, "Velocidad de los DOS motores: " + String(porcentaje) +
-                              "%. Guardada: sobrevive reinicios.\n"
-                              "Probala con /motor_a o /motor_b.");
+      if (argumentos.length() == 0) {
+        telegramEnviar(chat_id, "Velocidades del cobertor:\n" + tablaDeVelocidades() +
+                                "\n\nLas cuatro juntas: /velocidad 35"
+                                "\nSolo al abrir: /velocidad_abrir 40 30"
+                                "\nSolo al cerrar: /velocidad_cerrar 45 35");
+      } else if (!velocidadValida(porcentaje)) {
+        telegramEnviar(chat_id, textoVelocidadInvalida("/velocidad 35"));
+      } else {
+        guardarVelocidad(motorA, true,  porcentaje);
+        guardarVelocidad(motorB, true,  porcentaje);
+        guardarVelocidad(motorA, false, porcentaje);
+        guardarVelocidad(motorB, false, porcentaje);
+        telegramEnviar(chat_id, "Las CUATRO velocidades quedaron en " + String(porcentaje) +
+                                "%. Guardadas: sobreviven reinicios.\n\n" +
+                                tablaDeVelocidades() +
+                                "\n\nPara afinar una sola: /velocidad_abrir o /velocidad_cerrar.");
+      }
+    }
+    else {
+      telegramEnviar(chat_id, "No conozco " + comando + ".\n\nLas velocidades se ajustan con:\n"
+                              "/velocidad 35\n/velocidad_abrir 40 30\n/velocidad_cerrar 45 35");
     }
   }
   // Cuánto dura cada movimiento. Los dos comandos comparten cuerpo porque sólo
@@ -2877,8 +2984,9 @@ String armarAyudaControl(String from_name) {
   s += "/cobertor_parar - frenar el cobertor\n";
   s += "/tiempo_abrir 8 - cuantos segundos dura el abrir\n";
   s += "/tiempo_cerrar 8 - cuantos segundos dura el cerrar\n";
-  s += "/velocidad 35 - que tan rapido se mueven los DOS motores (%)\n";
-  s += "/velocidad_a 40, /velocidad_b 30 - la de UN motor solo\n";
+  s += "/velocidad 35 - las cuatro velocidades de una (%)\n";
+  s += "/velocidad_abrir 40 30 - motor A y motor B, al abrir\n";
+  s += "/velocidad_cerrar 45 35 - motor A y motor B, al cerrar\n";
   s += "/motor_a 5 - probar un motor solo N segundos (taller)\n";
   s += "/cobertor_sentido - invertir el sentido del cobertor\n";
   s += "/sentido_a, /sentido_b - invertir el giro de esa PRUEBA\n\n";
@@ -2971,8 +3079,7 @@ String armarStatus() {
   s += "Cobertor: " + estadoCobertorTexto() + "\n";
   s += "Tiempos: abrir " + segundosTexto(tiempoAbrirDecimas) + " s | cerrar " +
        segundosTexto(tiempoCerrarDecimas) + " s\n";
-  s += "Velocidad motores: A " + String(velocidadPorcentaje(motorA)) + "% | B " +
-       String(velocidadPorcentaje(motorB)) + "%\n";
+  s += "Velocidades:\n" + tablaDeVelocidades() + "\n";
   s += "Cobertor al ABRIR: los 2 motores " + giroTexto(sentidoDelCobertor(true)) + "\n";
   s += "Pruebas: motor A " + giroTexto(sentidoDeLaPrueba('A')) +
        " | motor B " + giroTexto(sentidoDeLaPrueba('B')) + "\n";
