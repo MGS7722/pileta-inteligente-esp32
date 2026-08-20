@@ -491,6 +491,16 @@ OneWire            oneWire(PIN_DS18B20);
 DallasTemperature  sensores(&oneWire);
 LiquidCrystal_I2C  lcd(0x27, 16, 2);
 
+// Los datos de la pantalla van al lado de su objeto para que estén declarados
+// antes del setup. La explicación de para qué sirve cada uno está en la sección
+// PANTALLA LCD, junto a las funciones que los usan.
+const uint8_t  LCD_DIRECCION_I2C = 0x27;   // el mismo del objeto de arriba
+const uint8_t  LCD_BIT_ENABLE    = 0x04;   // P2 del PCF8574
+const uint8_t  LCD_BIT_LUZ       = 0x08;   // P3 del PCF8574
+const unsigned long INTERVALO_RESYNC_LCD = 10000;
+
+unsigned long ultimoResyncLcd = 0;
+
 Preferences preferencias;   // Memoria no volátil (guarda la temperatura objetivo)
 
 WiFiClientSecure     client;
@@ -747,13 +757,13 @@ void setup() {
   sensores.setResolution(12);
   sensores.setWaitForConversion(false);   // no bloquear el loop mientras convierte
 
-  // Pantalla
+  // Pantalla. Acá sí se usa lcd.init() —con su segundo de esperas adentro—
+  // porque el setup puede permitírselo; de ahí en más el display se mantiene
+  // enganchado con lcdResincronizar(), que no bloquea (ver esa función).
   lcd.init();
   lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Control Pileta");
-  lcd.setCursor(0, 1);
-  lcd.print("Iniciando...");
+  ultimoResyncLcd = millis();
+  pantallaMostrar("Control Pileta", "Iniciando...");
   delay(2000);
   lcd.clear();
 
@@ -847,6 +857,91 @@ void informarMotivoDelReinicio() {
 }
 
 // ============================================================
+//   PANTALLA LCD — todo lo que se muestra pasa por acá
+// ============================================================
+//
+// POR QUÉ EL DISPLAY SE RESINCRONIZA SOLO (visto en hardware el 2026-08-20):
+//
+// El HD44780 trabaja en modo de 4 bits: cada carácter viaja en DOS mitades. Si
+// un pico eléctrico le hace perder una sola mitad —un relé que conmuta, un motor
+// que arranca, un cable de I2C que corre al lado de los de potencia—, a partir
+// de ahí cada byte se arma con la mitad de un carácter y la mitad del siguiente.
+// La pantalla queda escribiendo símbolos nítidos y perfectamente dibujados, pero
+// sin ningún sentido, y **no se recupera sola**: el programa la inicializaba una
+// única vez al arrancar, así que quedaba arruinada hasta el próximo encendido.
+// Exactamente lo que le pasó a Mariano después de cablear el relé de 12V.
+//
+// La cura es volver a mandarle la secuencia de arranque, que reengancha el paso
+// desde cualquier estado: tres veces el nibble 0x03 (que fuerza modo de 8 bits
+// sea cual sea la fase en la que quedó) y después 0x02, que lo devuelve a 4 bits.
+//
+// ⚠️ NO se puede usar `lcd.init()` para esto, aunque sea lo obvio: adentro tiene
+// `delay(50)` y `delay(1000)` (verificado en LiquidCrystal_I2C.cpp). Un segundo
+// entero de loop congelado dejaría las luces clavadas y el sonido sordo, que es
+// justo lo que este proyecto ya trabajó para sacarse de encima. Por eso los
+// nibbles se mandan a mano al expansor: la secuencia completa cuesta ~10 ms.
+//
+// El mapeo del PCF8574 es el de la librería (LiquidCrystal_I2C.h): P0=RS, P1=RW,
+// P2=Enable, P3=retroiluminación, P4..P7 = los cuatro bits de datos.
+
+// Escribe un byte en el expansor. Es el único lugar que le habla directo.
+void lcdExpansor(uint8_t valor) {
+  Wire.beginTransmission(LCD_DIRECCION_I2C);
+  Wire.write(valor | LCD_BIT_LUZ);   // la luz se mantiene encendida siempre
+  Wire.endTransmission();
+}
+
+// Manda media orden (un nibble) con su pulso de enable, que es lo que hace que
+// el display la tome. Los tiempos son los del datasheet del HD44780.
+void lcdMandarNibble(uint8_t nibble) {
+  lcdExpansor(nibble);
+  lcdExpansor(nibble | LCD_BIT_ENABLE);
+  delayMicroseconds(1);              // el pulso tiene que durar más de 450 ns
+  lcdExpansor(nibble & ~LCD_BIT_ENABLE);
+  delayMicroseconds(50);             // la orden necesita más de 37 us para entrar
+}
+
+// Devuelve el display al modo de 4 bits desde CUALQUIER estado en el que haya
+// quedado. Después hay que reescribir el contenido: el reenganche no lo borra,
+// pero tampoco arregla lo que ya estaba mal escrito en la pantalla.
+void lcdResincronizar() {
+  lcdMandarNibble(0x03 << 4);
+  delayMicroseconds(4500);           // el datasheet pide más de 4,1 ms
+  lcdMandarNibble(0x03 << 4);
+  delayMicroseconds(4500);
+  lcdMandarNibble(0x03 << 4);
+  delayMicroseconds(150);
+  lcdMandarNibble(0x02 << 4);        // a partir de acá vuelve a hablar de a 4 bits
+
+  // Ya está enganchado: estas tres órdenes van por la librería, que las manda
+  // como bytes completos.
+  lcd.command(LCD_FUNCTIONSET | LCD_4BITMODE | LCD_2LINE | LCD_5x8DOTS);
+  lcd.command(LCD_DISPLAYCONTROL | LCD_DISPLAYON);
+  lcd.command(LCD_ENTRYMODESET | LCD_ENTRYLEFT);
+}
+
+// Muestra las dos líneas. Cada tanto reengancha el display ANTES de escribir,
+// así el hueco en blanco dura los pocos milisegundos que tarda el reenganche y
+// no se llega a ver. Las líneas se rellenan a 16 caracteres para pisar lo que
+// hubiera antes, que es más barato y más seguro que un lcd.clear().
+void pantallaMostrar(const String &arriba, const String &abajo) {
+  if (millis() - ultimoResyncLcd >= INTERVALO_RESYNC_LCD) {
+    ultimoResyncLcd = millis();
+    lcdResincronizar();
+  }
+
+  String linea1 = arriba;
+  String linea2 = abajo;
+  while (linea1.length() < 16) linea1 += ' ';
+  while (linea2.length() < 16) linea2 += ' ';
+
+  lcd.setCursor(0, 0);
+  lcd.print(linea1.substring(0, 16));
+  lcd.setCursor(0, 1);
+  lcd.print(linea2.substring(0, 16));
+}
+
+// ============================================================
 //   CALENTADOR
 // ============================================================
 
@@ -877,10 +972,7 @@ void actualizarTemperatura() {
     sensorTempOk = false;
     apagarCalentador();
 
-    lcd.setCursor(0, 0);
-    lcd.print("ERROR SENSOR!   ");
-    lcd.setCursor(0, 1);
-    lcd.print("Revisar cables  ");
+    pantallaMostrar("ERROR SENSOR!", "Revisar cables");
 
     Serial.println("ERROR: sensor desconectado. Calentador apagado por seguridad.");
     return;
@@ -909,15 +1001,10 @@ void actualizarTemperatura() {
       break;
   }
 
-  // Mostrar en la pantalla
-  lcd.setCursor(0, 0);
-  lcd.print("Temp: ");
-  lcd.print(temp, 1);
-  lcd.print((char)223);   // símbolo de grado
-  lcd.print("C     ");
-
-  lcd.setCursor(0, 1);
-  lcd.print(calentadorEncendido ? "Calor: ON       " : "Calor: OFF      ");
+  // Mostrar en la pantalla. El 223 es el símbolo de grado en la tabla del
+  // HD44780, que no coincide con la del ordenador: por eso va por código.
+  const String lineaTemp = "Temp: " + String(temp, 1) + String((char)223) + "C";
+  pantallaMostrar(lineaTemp, calentadorEncendido ? "Calor: ON" : "Calor: OFF");
 
   // Mostrar por el Monitor Serie
   Serial.print("Temp: ");
@@ -1966,6 +2053,223 @@ void configurarTelegram() {
   bot.maxMessageLength = TELEGRAM_BUFFER_BYTES;
 }
 
+// ============================================================
+//   ENVÍO A TELEGRAM — hecho a mano, sin pasar por la librería
+// ============================================================
+//
+// POR QUÉ NO SE USA EL `sendMessage()` DE LA LIBRERÍA (medido en hardware el
+// 2026-08-20):
+//
+// UniversalTelegramBot lee la respuesta HTTP así (readHTTPAnswer):
+//
+//     while (client->available()) { ...leer... }
+//     if (responseReceived) break;      // corta apenas leyó ALGO
+//
+// `responseReceived` se pone en verdadero con el PRIMER carácter, así que la
+// función corta apenas drena el primer bloque disponible. Si los encabezados
+// llegan en un segmento TLS y el cuerpo JSON en el siguiente —lo normal en
+// cuanto la respuesta crece—, se queda con el cuerpo vacío o partido,
+// checkForOkResponse() no puede confirmar el envío, y sendPostMessage() entra en
+// `while (millis() < sttime + 8000)` REENVIANDO el mismo mensaje durante ocho
+// segundos. Es una carrera, por eso el síntoma era intermitente.
+//
+// La medición que lo probó: un `/help` costó 16805 ms (8000 + 8000, sus dos
+// mensajes) y le llegó TRES veces al celular de Mariano, con el comando
+// ejecutado una sola vez. Falla incluso con mensajes de 486 bytes, así que
+// acortarlos no era salida; `sendSimpleMessage()` trae el mismo bucle; y la
+// versión de master del repositorio tiene el mismo código (revisada ese día).
+//
+// Mandar un POST con JSON son treinta líneas, y hechas acá se puede:
+//
+//   * leer el `Content-Length` y consumir EXACTAMENTE esos bytes, así que es
+//     imposible quedarse con media respuesta. Verificado contra el servidor
+//     real: api.telegram.org contesta HTTP/1.1 con Content-Length y sin
+//     `chunked`, y ofrece `Connection: keep-alive`;
+//   * dejar el flujo limpio para el pedido siguiente, que es lo que permite
+//     compartir la conexión con la librería sin pisarse;
+//   * y sobre todo NUNCA REINTENTAR. Si algo falla queda en el Monitor Serie y
+//     se sigue: un mensaje no puede duplicarse porque no existe el código que lo
+//     mandaría dos veces.
+//
+// OJO con los nombres: la librería define TELEGRAM_HOST y TELEGRAM_SSL_PORT como
+// macros, así que acá se usan otros.
+
+const char     HOST_TELEGRAM[]      = "api.telegram.org";
+const uint16_t PUERTO_TELEGRAM      = 443;
+const unsigned long TELEGRAM_ESPERA_MS = 5000;   // tope para leer una respuesta
+
+// Cuánto del cuerpo se guarda para decidir si Telegram aceptó el mensaje. El
+// veredicto (`"ok":true`) viene al principio; el resto se consume igual —para
+// dejar el flujo limpio— pero no se guarda, así un mensaje largo no se copia
+// entero en memoria sólo para mirarle las primeras letras.
+const size_t TELEGRAM_CUERPO_UTIL = 128;
+
+// Escapa el texto para meterlo dentro de una cadena JSON. Los bytes UTF-8 —las
+// tildes, los emojis— pasan tal cual: JSON los acepta y Telegram los espera así.
+String escaparJson(const String &texto) {
+  String salida;
+  salida.reserve(texto.length() + 16);
+
+  for (size_t i = 0; i < texto.length(); i++) {
+    const char c = texto[i];
+    switch (c) {
+      case '"':  salida += "\\\""; break;
+      case '\\': salida += "\\\\"; break;
+      case '\n': salida += "\\n";  break;
+      case '\r': salida += "\\r";  break;
+      case '\t': salida += "\\t";  break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char escape[7];
+          snprintf(escape, sizeof(escape), "\\u%04x", (uint8_t)c);
+          salida += escape;
+        } else {
+          salida += c;
+        }
+    }
+  }
+  return salida;
+}
+
+// Lee una línea terminada en '\n' sin pasarse del límite de tiempo. El delay(1)
+// no es opcional: esto corre en la tarea del núcleo 0 y sin ceder el CPU el
+// watchdog reinicia la placa.
+bool leerLineaHttp(String &linea, unsigned long limite) {
+  linea = "";
+
+  while ((long)(millis() - limite) < 0) {
+    while (client.available()) {
+      const char c = client.read();
+      if (c == '\n') {
+        if (linea.endsWith("\r")) linea.remove(linea.length() - 1);
+        return true;
+      }
+      linea += c;
+    }
+    if (!client.connected()) return false;   // el servidor cerró antes de tiempo
+    delay(1);
+  }
+  return false;
+}
+
+// Lee la respuesta completa y deja el flujo listo para el próximo pedido.
+// Devuelve true sólo si Telegram contestó 200 y su JSON dice `"ok":true`.
+//
+// Ante cualquier problema corta la conexión: si quedó media respuesta sin leer,
+// el pedido siguiente leería la cola del anterior y el error se volvería
+// imposible de entender. Cortar es la única forma honesta de volver a un estado
+// conocido.
+bool leerRespuestaTelegram(const char *paraQue) {
+  const unsigned long limite = millis() + TELEGRAM_ESPERA_MS;
+  String linea;
+
+  if (!leerLineaHttp(linea, limite)) {
+    Serial.print("Telegram: sin respuesta al ");
+    Serial.print(paraQue);
+    Serial.println(". No se reintenta a proposito.");
+    client.stop();
+    return false;
+  }
+  const bool http200 = (linea.indexOf(" 200 ") > 0);
+
+  long largoCuerpo = -1;
+  while (leerLineaHttp(linea, limite)) {
+    if (linea.length() == 0) break;   // la línea vacía cierra los encabezados
+
+    String enMinusculas = linea;
+    enMinusculas.toLowerCase();
+    if (enMinusculas.startsWith("content-length:")) {
+      largoCuerpo = linea.substring(linea.indexOf(':') + 1).toInt();
+    }
+  }
+
+  if (largoCuerpo < 0) {
+    Serial.print("Telegram: la respuesta al ");
+    Serial.print(paraQue);
+    Serial.println(" vino sin Content-Length. Se corta la conexion.");
+    client.stop();
+    return false;
+  }
+
+  String principio;
+  principio.reserve(TELEGRAM_CUERPO_UTIL + 1);
+  long leidos = 0;
+
+  while (leidos < largoCuerpo && (long)(millis() - limite) < 0) {
+    while (client.available() && leidos < largoCuerpo) {
+      const char c = client.read();
+      if (principio.length() < TELEGRAM_CUERPO_UTIL) principio += c;
+      leidos++;
+    }
+    if (leidos < largoCuerpo && !client.connected()) break;
+    if (leidos < largoCuerpo) delay(1);
+  }
+
+  if (leidos < largoCuerpo) {
+    Serial.print("Telegram: la respuesta al ");
+    Serial.print(paraQue);
+    Serial.print(" llego incompleta (");
+    Serial.print(leidos);
+    Serial.print(" de ");
+    Serial.print(largoCuerpo);
+    Serial.println(" bytes). Se corta la conexion.");
+    client.stop();
+    return false;
+  }
+
+  const bool aceptado = http200 && (principio.indexOf("\"ok\":true") >= 0);
+  if (!aceptado) {
+    Serial.print("Telegram rechazo el ");
+    Serial.print(paraQue);
+    Serial.print(": ");
+    Serial.println(principio);
+  }
+  return aceptado;
+}
+
+// Manda un mensaje. Devuelve si Telegram lo aceptó, y NUNCA reintenta.
+bool telegramEnviar(const String &chatId, const String &texto) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Telegram: no se pudo enviar, no hay WiFi.");
+    return false;
+  }
+
+  const String cuerpo = "{\"chat_id\":\"" + chatId + "\",\"text\":\"" + escaparJson(texto) + "\"}";
+
+  // La consulta la sigue haciendo la librería, y su lector corta antes de
+  // tiempo (ver arriba): puede dejar bytes de SU respuesta sin leer en el
+  // socket. Si encontramos algo pendiente, esta conexión ya no es confiable —
+  // leer la cola del pedido anterior creyendo que es nuestra respuesta sería el
+  // peor error posible, y el más difícil de entender. Se corta y se abre limpia.
+  if (client.connected() && client.available()) {
+    while (client.available()) client.read();
+    client.stop();
+    Serial.println("Telegram: habia restos de la consulta anterior. Se rearma la conexion.");
+  }
+
+  // Se reaprovecha la conexión que ya esté abierta —la deja así la consulta
+  // anterior— y sólo se abre una nueva si hace falta. Cada apertura cuesta un
+  // saludo TLS, que en la red de la pileta se midió entre 3,0 y 6,7 segundos.
+  if (!client.connected() && !client.connect(HOST_TELEGRAM, PUERTO_TELEGRAM)) {
+    Serial.println("Telegram: no se pudo abrir la conexion para enviar.");
+    return false;
+  }
+
+  client.print(F("POST /bot"));
+  client.print(BOT_TOKEN);                       // sólo va al socket, nunca al Serie
+  client.println(F("/sendMessage HTTP/1.1"));
+  client.print(F("Host: "));
+  client.println(HOST_TELEGRAM);
+  client.println(F("Content-Type: application/json"));
+  client.println(F("Connection: keep-alive"));
+  client.print(F("Content-Length: "));
+  client.println(cuerpo.length());               // en bytes, que es lo que pide HTTP
+  client.println();
+  client.print(cuerpo);
+
+  return leerRespuestaTelegram("envio");
+}
+
 // Telegram guarda hasta 24 horas los mensajes que el bot todavía no confirmó.
 // Sin esto, un ESP32 que estuvo apagado un rato arranca masticando esa cola
 // entera —del mensaje más viejo al más nuevo y de a uno por vuelta—: parece
@@ -1988,7 +2292,7 @@ void enviarAvisoPendiente() {
   if (!avisoPendiente) return;
 
   if (WiFi.status() == WL_CONNECTED && telegramListo) {
-    bot.sendMessage(avisoChat, avisoTexto, "");
+    telegramEnviar(avisoChat, avisoTexto);
   }
   avisoPendiente = false;   // último: recién ahora el buzón queda libre
 }
@@ -2039,7 +2343,7 @@ void procesarTelegram() {
     // Si se configuró un chat autorizado, se ignora al resto.
     String autorizado = CHAT_ID_AUTORIZADO;
     if (autorizado.length() > 0 && chat_id != autorizado) {
-      bot.sendMessage(chat_id, "No autorizado.", "");
+      telegramEnviar(chat_id, "No autorizado.");
       continue;
     }
 
@@ -2065,8 +2369,8 @@ void procesarTelegram() {
 void manejarComandoTelegram(String chat_id, String text, String from_name) {
 
   if (text == "/start" || text == "/help") {
-    bot.sendMessage(chat_id, armarAyudaControl(from_name), "");
-    bot.sendMessage(chat_id, armarAyudaConsultas(), "");
+    telegramEnviar(chat_id, armarAyudaControl(from_name));
+    telegramEnviar(chat_id, armarAyudaConsultas());
   }
 
   // --- Luces ---
@@ -2078,36 +2382,36 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
   // en la vuelta siguiente, unos 28 ms después.
   else if (text == "/luces_auto" || text == "/auto") {
     modoLuces = LUCES_AUTO;
-    bot.sendMessage(chat_id, "Luces en AUTO: " + nombreDelEfecto() +
-                             ".\nCambia el efecto con /efecto 1 a 4.", "");
+    telegramEnviar(chat_id, "Luces en AUTO: " + nombreDelEfecto() +
+                            ".\nCambia el efecto con /efecto 1 a 4.");
   }
   else if (text == "/luces_on") {
     modoLuces = LUCES_ON;
-    bot.sendMessage(chat_id, "Luces ON: tira encendida fija (blanco cálido) al " +
-                             String(brilloPorcentaje) + "% de brillo.", "");
+    telegramEnviar(chat_id, "Luces ON: tira encendida fija (blanco cálido) al " +
+                            String(brilloPorcentaje) + "% de brillo.");
   }
   else if (text == "/luces_off") {
     modoLuces = LUCES_OFF;
-    bot.sendMessage(chat_id, "Luces OFF: tira apagada.", "");
+    telegramEnviar(chat_id, "Luces OFF: tira apagada.");
   }
   else if (text == "/luces_test") {
     inicioPruebaTira = millis();
     pruebaTiraActiva = true;
-    bot.sendMessage(chat_id,
-      "PRUEBA DE LA TIRA (" + String(numLeds) + " pixeles)\n\n"
-      "Va a mostrar, 1,2 segundos cada uno:\n"
-      "1) ROJO   2) VERDE   3) AZUL   4) BLANCO\n\n"
-      "Mirá dos cosas:\n"
-      "- Que se enciendan TODOS los pixeles (si no, ajustá /leds N).\n"
-      "- Que los colores coincidan. Si anuncia ROJO y ves VERDE, tu tira usa "
-      "otro orden de colores: mandá /orden y repetí la prueba.", "");
+    telegramEnviar(chat_id,
+     "PRUEBA DE LA TIRA (" + String(numLeds) + " pixeles)\n\n"
+     "Va a mostrar, 1,2 segundos cada uno:\n"
+     "1) ROJO   2) VERDE   3) AZUL   4) BLANCO\n\n"
+     "Mirá dos cosas:\n"
+     "- Que se enciendan TODOS los pixeles (si no, ajustá /leds N).\n"
+     "- Que los colores coincidan. Si anuncia ROJO y ves VERDE, tu tira usa "
+     "otro orden de colores: mandá /orden y repetí la prueba.");
   }
   else if (text == "/orden") {
     tiraEsGRB = !tiraEsGRB;
     preferencias.putBool("tiraGRB", tiraEsGRB);
     tiraNecesitaReconfigurar = true;   // lo aplica el loop, no este núcleo
-    bot.sendMessage(chat_id, "Orden de colores: " + String(tiraEsGRB ? "GRB" : "RGB") +
-                             ". Guardado.\nProbá de nuevo con /luces_test.", "");
+    telegramEnviar(chat_id, "Orden de colores: " + String(tiraEsGRB ? "GRB" : "RGB") +
+                            ". Guardado.\nProbá de nuevo con /luces_test.");
   }
   else if (text.startsWith("/efecto")) {
     String arg = text.substring(7);
@@ -2115,15 +2419,15 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     int numero = arg.toInt();
 
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id, "Efecto actual: " + String(efectoActual) + " — " +
-                               nombreDelEfecto() + "\n\n" + listaDeEfectos(), "");
+      telegramEnviar(chat_id, "Efecto actual: " + String(efectoActual) + " — " +
+                              nombreDelEfecto() + "\n\n" + listaDeEfectos());
     } else if (numero < EFECTO_MINIMO || numero > EFECTO_MAXIMO) {
-      bot.sendMessage(chat_id, "Efecto invalido.\n\n" + listaDeEfectos(), "");
+      telegramEnviar(chat_id, "Efecto invalido.\n\n" + listaDeEfectos());
     } else {
       efectoActual = numero;
       preferencias.putUChar("efecto", (uint8_t)efectoActual);
-      bot.sendMessage(chat_id, "Efecto " + String(efectoActual) + ": " +
-                               nombreDelEfecto() + ". Guardado.", "");
+      telegramEnviar(chat_id, "Efecto " + String(efectoActual) + ": " +
+                              nombreDelEfecto() + ". Guardado.");
     }
   }
   else if (text.startsWith("/leds")) {
@@ -2132,18 +2436,18 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     int cantidad = arg.toInt();
 
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id, "La tira esta configurada con " + String(numLeds) +
-                               " pixeles.\nPara cambiarlo: /leds 15\n"
-                               "(una tira de 30 LED/m tiene 15 pixeles cada 50 cm)", "");
+      telegramEnviar(chat_id, "La tira esta configurada con " + String(numLeds) +
+                              " pixeles.\nPara cambiarlo: /leds 15\n"
+                              "(una tira de 30 LED/m tiene 15 pixeles cada 50 cm)");
     } else if (cantidad < 1 || cantidad > MAX_LEDS) {
-      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 1 y " +
-                               String(MAX_LEDS) + ".", "");
+      telegramEnviar(chat_id, "Valor invalido: usa un numero entre 1 y " +
+                              String(MAX_LEDS) + ".");
     } else {
       numLeds = cantidad;
       preferencias.putUShort("numLeds", (uint16_t)numLeds);
       tiraNecesitaReconfigurar = true;
-      bot.sendMessage(chat_id, "Tira configurada con " + String(numLeds) +
-                               " pixeles. Guardado.\nVerificalo con /luces_test.", "");
+      telegramEnviar(chat_id, "Tira configurada con " + String(numLeds) +
+                              " pixeles. Guardado.\nVerificalo con /luces_test.");
     }
   }
   else if (text.startsWith("/brillo")) {
@@ -2152,17 +2456,17 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     int porcentaje = arg.toInt();
 
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id, "Brillo maximo: " + String(brilloPorcentaje) +
-                               "%.\nPara cambiarlo: /brillo 60", "");
+      telegramEnviar(chat_id, "Brillo maximo: " + String(brilloPorcentaje) +
+                              "%.\nPara cambiarlo: /brillo 60");
     } else if (porcentaje < 0 || porcentaje > 100) {
-      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 0 y 100.", "");
+      telegramEnviar(chat_id, "Valor invalido: usa un numero entre 0 y 100.");
     } else {
       brilloPorcentaje = porcentaje;
       preferencias.putUChar("brillo", (uint8_t)brilloPorcentaje);
-      bot.sendMessage(chat_id, "Brillo maximo: " + String(brilloPorcentaje) +
-                               "%. Guardado.\n"
-                               "Ojo: el limite de corriente puede bajarlo todavia mas "
-                               "(mira /status).", "");
+      telegramEnviar(chat_id, "Brillo maximo: " + String(brilloPorcentaje) +
+                              "%. Guardado.\n"
+                              "Ojo: el limite de corriente puede bajarlo todavia mas "
+                              "(mira /status).");
     }
   }
   else if (text.startsWith("/corriente")) {
@@ -2171,14 +2475,14 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     int miliamperes = arg.toInt();
 
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id, armarCorriente(), "");
+      telegramEnviar(chat_id, armarCorriente());
     } else if (miliamperes < 50 || miliamperes > 2000) {
-      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 50 y 2000 mA.", "");
+      telegramEnviar(chat_id, "Valor invalido: usa un numero entre 50 y 2000 mA.");
     } else {
       corrienteMaximaMa = miliamperes;
       preferencias.putUShort("corriente", (uint16_t)corrienteMaximaMa);
-      bot.sendMessage(chat_id, "Presupuesto de corriente: " + String(corrienteMaximaMa) +
-                               " mA. Guardado.\n" + consejoDeCorriente(), "");
+      telegramEnviar(chat_id, "Presupuesto de corriente: " + String(corrienteMaximaMa) +
+                              " mA. Guardado.\n" + consejoDeCorriente());
     }
   }
   // El piso de ruido depende del lugar donde esté instalada la pileta, no del
@@ -2190,37 +2494,37 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     int valor = arg.toInt();
 
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id,
-        "Piso de ruido por banda: " + String(pisoRuidoBanda) + "\n\n"
-        "Lo que no supera este valor no cuenta como sonido: es el ruido del\n"
-        "microfono y del ambiente, y vale cero.\n\n"
-        "Para calibrarlo: mandá /espectro EN SILENCIO y poné el piso un poco\n"
-        "por encima del CRUDO mas alto que veas.\n"
-        "Para cambiarlo: /piso 12", "");
+      telegramEnviar(chat_id,
+       "Piso de ruido por banda: " + String(pisoRuidoBanda) + "\n\n"
+       "Lo que no supera este valor no cuenta como sonido: es el ruido del\n"
+       "microfono y del ambiente, y vale cero.\n\n"
+       "Para calibrarlo: mandá /espectro EN SILENCIO y poné el piso un poco\n"
+       "por encima del CRUDO mas alto que veas.\n"
+       "Para cambiarlo: /piso 12");
     } else if (valor < 0 || valor > 200) {
-      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre 0 y 200.", "");
+      telegramEnviar(chat_id, "Valor invalido: usa un numero entre 0 y 200.");
     } else {
       pisoRuidoBanda = valor;
       preferencias.putUChar("pisoRuido", (uint8_t)pisoRuidoBanda);
-      bot.sendMessage(chat_id, "Piso de ruido por banda: " + String(pisoRuidoBanda) +
-                               ". Guardado.\n"
-                               "La ganancia automatica se reacomoda en unos segundos.\n"
-                               "Verificalo con /espectro.", "");
+      telegramEnviar(chat_id, "Piso de ruido por banda: " + String(pisoRuidoBanda) +
+                              ". Guardado.\n"
+                              "La ganancia automatica se reacomoda en unos segundos.\n"
+                              "Verificalo con /espectro.");
     }
   }
 
   // --- Calentador ---
   else if (text == "/calentador_auto") {
     modoCalentador = CALEF_AUTO;
-    bot.sendMessage(chat_id, "Calentador en AUTO: se regula solo por la temperatura.", "");
+    telegramEnviar(chat_id, "Calentador en AUTO: se regula solo por la temperatura.");
   }
   else if (text == "/calentador_on") {
     modoCalentador = CALEF_ON;
-    bot.sendMessage(chat_id, "Calentador ON: forzado encendido (se apaga solo si falla el sensor).", "");
+    telegramEnviar(chat_id, "Calentador ON: forzado encendido (se apaga solo si falla el sensor).");
   }
   else if (text == "/calentador_off") {
     modoCalentador = CALEF_OFF;
-    bot.sendMessage(chat_id, "Calentador OFF: forzado apagado.", "");
+    telegramEnviar(chat_id, "Calentador OFF: forzado apagado.");
   }
 
   // --- Cobertor ---
@@ -2235,24 +2539,24 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     const bool abrir = (text == "/cobertor_abrir");
 
     if (estadoCobertor != COB_PARADO) {
-      bot.sendMessage(chat_id, "El cobertor ya se esta moviendo. Frenalo con /cobertor_parar "
-                               "antes de mandar otra orden.", "");
+      telegramEnviar(chat_id, "El cobertor ya se esta moviendo. Frenalo con /cobertor_parar "
+                              "antes de mandar otra orden.");
     } else {
       recordarChatDelCobertor(chat_id);
       if (abrir) cobertorAbrir(); else cobertorCerrar();
 
-      bot.sendMessage(chat_id, String(abrir ? "Abriendo" : "Cerrando") +
-                               " el cobertor durante " +
-                               segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
-                               " segundos.\nLos dos motores giran juntos. "
-                               "Te aviso cuando termine.\n"
-                               "Para frenar antes: /cobertor_parar", "");
+      telegramEnviar(chat_id, String(abrir ? "Abriendo" : "Cerrando") +
+                              " el cobertor durante " +
+                              segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
+                              " segundos.\nLos dos motores giran juntos. "
+                              "Te aviso cuando termine.\n"
+                              "Para frenar antes: /cobertor_parar");
     }
   }
   else if (text == "/cobertor_parar") {
     cobertorParar();
     chatCobertor[0] = '\0';   // lo paré a mano: no hace falta avisar nada
-    bot.sendMessage(chat_id, "Cobertor detenido.", "");
+    telegramEnviar(chat_id, "Cobertor detenido.");
   }
 
   // --- Prueba de los motores (taller) ---
@@ -2271,51 +2575,51 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
                                                  : leerTiempoEnDecimas(arg);
 
     if (estadoCobertor != COB_PARADO) {
-      bot.sendMessage(chat_id, "El cobertor se esta moviendo. Frenalo con /cobertor_parar "
-                               "antes de probar un motor suelto.", "");
+      telegramEnviar(chat_id, "El cobertor se esta moviendo. Frenalo con /cobertor_parar "
+                              "antes de probar un motor suelto.");
     } else if (decimas < TIEMPO_COBERTOR_MINIMO || decimas > TIEMPO_COBERTOR_MAXIMO) {
-      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre " +
-                               segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
-                               segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
-                               "Se admiten decimales: /motor_" + letra + " 2.5", "");
+      telegramEnviar(chat_id, "Valor invalido: usa un numero entre " +
+                              segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
+                              segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
+                              "Se admiten decimales: /motor_" + letra + " 2.5");
     } else {
       const String giro = giroTexto(sentidoDeLaPrueba(cual));
       probarMotor(cual, decimas);
 
-      bot.sendMessage(chat_id, String("Motor ") + cual + " girando " + segundosTexto(decimas) +
-                               " segundos.\n\n"
-                               "Tiene que girar " + giro + ".\n\n"
-                               "Si va para el otro lado: /sentido_" + letra + "\n"
-                               "Para frenarlo antes: /cobertor_parar\n"
-                               "Para otro tiempo: /motor_" + letra + " 5\n\n"
-                               "OJO: esto mueve UN motor y deja al otro suelto. Con el hilo "
-                               "atado entre los dos ejes, el suelto frena por su reductora y "
-                               "puede trabar la prueba. Con el mecanismo armado conviene "
-                               "/tiempo_abrir 2 y /cobertor_abrir, que mueve los dos.", "");
+      telegramEnviar(chat_id, String("Motor ") + cual + " girando " + segundosTexto(decimas) +
+                              " segundos.\n\n"
+                              "Tiene que girar " + giro + ".\n\n"
+                              "Si va para el otro lado: /sentido_" + letra + "\n"
+                              "Para frenarlo antes: /cobertor_parar\n"
+                              "Para otro tiempo: /motor_" + letra + " 5\n\n"
+                              "OJO: esto mueve UN motor y deja al otro suelto. Con el hilo "
+                              "atado entre los dos ejes, el suelto frena por su reductora y "
+                              "puede trabar la prueba. Con el mecanismo armado conviene "
+                              "/tiempo_abrir 2 y /cobertor_abrir, que mueve los dos.");
     }
   }
 
   // --- Consultas ---
   else if (text == "/status") {
-    bot.sendMessage(chat_id, armarStatus(), "");
+    telegramEnviar(chat_id, armarStatus());
   }
   else if (text == "/temp") {
-    bot.sendMessage(chat_id, armarTemp(), "");
+    telegramEnviar(chat_id, armarTemp());
   }
   else if (text.startsWith("/temperatura")) {
     String arg = text.substring(12);   // lo que viene después de "/temperatura"
     arg.trim();
     float nueva = arg.toFloat();
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id, "Temperatura objetivo actual: " + String(tempObjetivo, 1) +
-                               " C.\nPara cambiarla: /temperatura 28", "");
+      telegramEnviar(chat_id, "Temperatura objetivo actual: " + String(tempObjetivo, 1) +
+                              " C.\nPara cambiarla: /temperatura 28");
     } else if (nueva < 15 || nueva > 35) {
-      bot.sendMessage(chat_id, "Valor invalido. Usa un numero entre 15 y 35. Ej: /temperatura 28", "");
+      telegramEnviar(chat_id, "Valor invalido. Usa un numero entre 15 y 35. Ej: /temperatura 28");
     } else {
       tempObjetivo = nueva;
       preferencias.putFloat("tempObj", tempObjetivo);
-      bot.sendMessage(chat_id, "Temperatura objetivo: " + String(tempObjetivo, 1) +
-                               " C. Guardada: sobrevive reinicios.", "");
+      telegramEnviar(chat_id, "Temperatura objetivo: " + String(tempObjetivo, 1) +
+                              " C. Guardada: sobrevive reinicios.");
     }
   }
   else if (text.startsWith("/velocidad")) {
@@ -2324,19 +2628,19 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     int porcentaje = arg.toInt();
 
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id, "Velocidad de los motores: " + String(velocidadPorcentaje()) +
-                               "%.\nPara cambiarla: /velocidad 35", "");
+      telegramEnviar(chat_id, "Velocidad de los motores: " + String(velocidadPorcentaje()) +
+                              "%.\nPara cambiarla: /velocidad 35");
     } else if (porcentaje < VELOCIDAD_MINIMA_PORCENTAJE || porcentaje > 100) {
-      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre " +
-                               String(VELOCIDAD_MINIMA_PORCENTAJE) + " y 100. Ej: /velocidad 35\n"
-                               "Por debajo de " + String(VELOCIDAD_MINIMA_PORCENTAJE) +
-                               "% el motor zumba pero no llega a girar.", "");
+      telegramEnviar(chat_id, "Valor invalido: usa un numero entre " +
+                              String(VELOCIDAD_MINIMA_PORCENTAJE) + " y 100. Ej: /velocidad 35\n"
+                              "Por debajo de " + String(VELOCIDAD_MINIMA_PORCENTAJE) +
+                              "% el motor zumba pero no llega a girar.");
     } else {
       velocidadCobertor = (porcentaje * 255) / 100;
       preferencias.putUChar("velCobertor", (uint8_t)velocidadCobertor);
-      bot.sendMessage(chat_id, "Velocidad de los motores: " + String(porcentaje) +
-                               "%. Guardada: sobrevive reinicios.\n"
-                               "Probala con /motor_a o /motor_b.", "");
+      telegramEnviar(chat_id, "Velocidad de los motores: " + String(porcentaje) +
+                              "%. Guardada: sobrevive reinicios.\n"
+                              "Probala con /motor_a o /motor_b.");
     }
   }
   // Cuánto dura cada movimiento. Los dos comandos comparten cuerpo porque sólo
@@ -2349,14 +2653,14 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     const String cual = abrir ? "abrir" : "cerrar";
 
     if (arg.length() == 0) {
-      bot.sendMessage(chat_id, "Tiempo para " + cual + ": " +
-                               segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
-                               " segundos.\nPara cambiarlo: /tiempo_" + cual + " 4.5", "");
+      telegramEnviar(chat_id, "Tiempo para " + cual + ": " +
+                              segundosTexto(abrir ? tiempoAbrirDecimas : tiempoCerrarDecimas) +
+                              " segundos.\nPara cambiarlo: /tiempo_" + cual + " 4.5");
     } else if (decimas < TIEMPO_COBERTOR_MINIMO || decimas > TIEMPO_COBERTOR_MAXIMO) {
-      bot.sendMessage(chat_id, "Valor invalido: usa un numero entre " +
-                               segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
-                               segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
-                               "Se admiten decimales: /tiempo_" + cual + " 4.5", "");
+      telegramEnviar(chat_id, "Valor invalido: usa un numero entre " +
+                              segundosTexto(TIEMPO_COBERTOR_MINIMO) + " y " +
+                              segundosTexto(TIEMPO_COBERTOR_MAXIMO) + " segundos.\n"
+                              "Se admiten decimales: /tiempo_" + cual + " 4.5");
     } else {
       if (abrir) {
         tiempoAbrirDecimas = decimas;
@@ -2365,29 +2669,29 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
         tiempoCerrarDecimas = decimas;
         preferencias.putUShort("tCerrarDec", tiempoCerrarDecimas);
       }
-      bot.sendMessage(chat_id, "Tiempo para " + cual + ": " + segundosTexto(decimas) +
-                               " segundos. Guardado: sobrevive reinicios.\n"
-                               "Probalo con /cobertor_" + cual + ".", "");
+      telegramEnviar(chat_id, "Tiempo para " + cual + ": " + segundosTexto(decimas) +
+                              " segundos. Guardado: sobrevive reinicios.\n"
+                              "Probalo con /cobertor_" + cual + ".");
     }
   }
   // Invierte el sentido del COBERTOR. Sólo toca /cobertor_abrir y
   // /cobertor_cerrar: las pruebas de taller siguen como estaban.
   else if (text == "/cobertor_sentido") {
     if (estadoCobertor != COB_PARADO) {
-      bot.sendMessage(chat_id, "El cobertor se esta moviendo. Frenalo con /cobertor_parar "
-                               "antes de cambiar el sentido.", "");
+      telegramEnviar(chat_id, "El cobertor se esta moviendo. Frenalo con /cobertor_parar "
+                              "antes de cambiar el sentido.");
     } else {
       cobertorInvertido = !cobertorInvertido;
       preferencias.putBool("cobInvert", cobertorInvertido);
 
-      bot.sendMessage(chat_id, "Sentido del cobertor invertido. Guardado.\n\n"
-                               "Ahora, al ABRIR los dos motores giran " +
-                               giroTexto(sentidoDelCobertor(true)) + ".\n"
-                               "Al CERRAR, los dos giran " +
-                               giroTexto(sentidoDelCobertor(false)) + ".\n\n"
-                               "Los dos motores van SIEMPRE para el mismo lado: reciben la "
-                               "misma polaridad, nunca uno contra el otro.\n\n"
-                               "Esto no cambia nada de /motor_a ni /motor_b.", "");
+      telegramEnviar(chat_id, "Sentido del cobertor invertido. Guardado.\n\n"
+                              "Ahora, al ABRIR los dos motores giran " +
+                              giroTexto(sentidoDelCobertor(true)) + ".\n"
+                              "Al CERRAR, los dos giran " +
+                              giroTexto(sentidoDelCobertor(false)) + ".\n\n"
+                              "Los dos motores van SIEMPRE para el mismo lado: reciben la "
+                              "misma polaridad, nunca uno contra el otro.\n\n"
+                              "Esto no cambia nada de /motor_a ni /motor_b.");
     }
   }
   // Sentido de una PRUEBA de taller. No afecta al cobertor.
@@ -2395,8 +2699,8 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
     const char cual = (text == "/sentido_a") ? 'A' : 'B';
 
     if (estadoCobertor != COB_PARADO) {
-      bot.sendMessage(chat_id, "Hay un motor en movimiento. Frenalo con /cobertor_parar "
-                               "antes de cambiar el sentido.", "");
+      telegramEnviar(chat_id, "Hay un motor en movimiento. Frenalo con /cobertor_parar "
+                              "antes de cambiar el sentido.");
     } else {
       if (cual == 'A') {
         pruebaAInvertida = !pruebaAInvertida;
@@ -2406,47 +2710,47 @@ void manejarComandoTelegram(String chat_id, String text, String from_name) {
         preferencias.putBool("pruebaBInv", pruebaBInvertida);
       }
 
-      bot.sendMessage(chat_id, String("Prueba del motor ") + cual + ": ahora gira " +
-                               giroTexto(sentidoDeLaPrueba(cual)) + ".\nGuardado.\n\n"
-                               "Esto vale SOLO para /motor_" + (cual == 'A' ? "a" : "b") +
-                               ". El cobertor no cambia: para invertirlo esta "
-                               "/cobertor_sentido.", "");
+      telegramEnviar(chat_id, String("Prueba del motor ") + cual + ": ahora gira " +
+                              giroTexto(sentidoDeLaPrueba(cual)) + ".\nGuardado.\n\n"
+                              "Esto vale SOLO para /motor_" + (cual == 'A' ? "a" : "b") +
+                              ". El cobertor no cambia: para invertirlo esta "
+                              "/cobertor_sentido.");
     }
   }
   else if (text == "/audio") {
-    bot.sendMessage(chat_id, armarAudio(), "");
+    telegramEnviar(chat_id, armarAudio());
   }
   else if (text == "/espectro") {
-    bot.sendMessage(chat_id, armarEspectro(), "");
+    telegramEnviar(chat_id, armarEspectro());
   }
   else if (text == "/diag") {
-    bot.sendMessage(chat_id, armarDiagnosticoMicrofono(), "");
+    telegramEnviar(chat_id, armarDiagnosticoMicrofono());
   }
   else if (text == "/onda") {
     // La captura la hace el loop: el ADC es del núcleo 1 y este código corre en
     // el 0. Acá sólo se deja el pedido.
     pedidoVolcarOnda = true;
-    bot.sendMessage(chat_id,
-      "Volcando 256 muestras crudas del microfono por el Monitor Serie (115200).\n"
-      "Copiá el bloque entre '=== ONDA CRUDA ===' y '=== FIN DE LA ONDA ===' "
-      "para analizarlo en la PC.", "");
+    telegramEnviar(chat_id,
+     "Volcando 256 muestras crudas del microfono por el Monitor Serie (115200).\n"
+     "Copiá el bloque entre '=== ONDA CRUDA ===' y '=== FIN DE LA ONDA ===' "
+     "para analizarlo en la PC.");
   }
   else if (text == "/trace") {
     trazaSonidoActiva = !trazaSonidoActiva;
-    bot.sendMessage(chat_id, trazaSonidoActiva
-      ? "Traza de sonido ACTIVADA: los datos salen por el Monitor Serie (115200)."
-      : "Traza de sonido apagada.", "");
+    telegramEnviar(chat_id, trazaSonidoActiva
+     ? "Traza de sonido ACTIVADA: los datos salen por el Monitor Serie (115200)."
+     : "Traza de sonido apagada.");
   }
   else if (text == "/ip") {
     if (WiFi.status() == WL_CONNECTED) {
-      bot.sendMessage(chat_id, "IP del ESP32: " + WiFi.localIP().toString(), "");
+      telegramEnviar(chat_id, "IP del ESP32: " + WiFi.localIP().toString());
     } else {
-      bot.sendMessage(chat_id, "WiFi no conectado.", "");
+      telegramEnviar(chat_id, "WiFi no conectado.");
     }
   }
 
   else {
-    bot.sendMessage(chat_id, "Comando no reconocido. Escribí /help para ver la lista.", "");
+    telegramEnviar(chat_id, "Comando no reconocido. Escribí /help para ver la lista.");
   }
 }
 

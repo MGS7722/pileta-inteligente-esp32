@@ -825,3 +825,92 @@ conexión abierta ese costo se pagaría una vez cada 25 s en lugar de en cada vu
 #### Atribución por modelo (sesión 2026-08-20)
 - **Opus 5**: auditoría del camino completo de Telegram (nuestro código + librería 1.3.0 +
   core), medición de los mensajes, los cuatro cambios del firmware y la documentación.
+
+### Sesión 2026-08-20 (parte 2) — El envío propio, y la pantalla que perdió el paso
+
+**El envío de Telegram dejó de pasar por la librería**
+
+Con la causa ya identificada (el lector de `UniversalTelegramBot` corta apenas leyó el primer
+bloque disponible), se evaluaron los caminos antes de escribir una línea:
+
+| Camino | Por qué no / por qué sí |
+|---|---|
+| Actualizar la librería | Se revisó el código de `master` en GitHub: **tiene el mismo bug**, mismo `break` temprano y mismo bucle de 8 s. Hay un PR abierto sin mergear |
+| Acortar los mensajes | Descartado por la medición: falló con un mensaje de **486 bytes** |
+| `sendSimpleMessage()` | Se leyó su implementación: trae el mismo `while (millis() - sttime < 8000ul)` |
+| Cambiar a `AsyncTelegram2` | Buena librería —lee con `Content-Length` y mantiene la conexión viva—, pero es una dependencia nueva, obliga a migrar los 56 puntos de envío **igual que la opción propia**, su camino de envío lee "lo que haya disponible" con la misma debilidad, y su polling por defecto es `timeout:0`. No compra lo suficiente para justificar migrar todo el bot a otra API |
+| **Envío propio** ← elegido | Treinta líneas, sin dependencias nuevas, y control total de lo único que importa acá: cuándo termina la respuesta y qué se hace si falla |
+
+Antes de escribirlo se verificó **contra el servidor real** cómo contesta la API, en vez de
+suponerlo (con un token falso, para no exponer el verdadero):
+
+```
+HTTP/1.1 429 Too Many Requests
+Content-Length: 109
+Connection: keep-alive
+```
+
+`Content-Length` siempre, nunca `chunked`, y `keep-alive` aceptado. Con eso, leer bien es
+determinista. La doc oficial de Telegram confirmó además lo otro que usa el programa: el offset
+negativo "olvida todas las actualizaciones previas" —que es lo que hace el descarte de cola al
+arrancar— y que los updates se guardan 24 horas.
+
+Tres decisiones de diseño:
+
+1. **No hay reintento, ninguno.** Un fallo queda en el Monitor Serie y se sigue. Un mensaje no
+   puede duplicarse porque no existe el código que lo mandaría dos veces.
+2. **Ante cualquier problema se corta la conexión.** Media respuesta sin leer envenenaría el
+   pedido siguiente.
+3. **Si la librería dejó restos en el socket** —su bug—, el envío los detecta y rearma la
+   conexión antes de mandar.
+
+Los 56 puntos de envío se migraron con un transformador que cuenta paréntesis y respeta las
+comillas, no con una expresión regular: las llamadas son multilínea y llevan concatenaciones
+adentro. Después se realinearon las líneas de continuación, porque `telegramEnviar(` es un
+carácter más corto que `bot.sendMessage(`.
+
+**La pantalla: perdió el paso y no se podía recuperar sola**
+
+En el medio de la sesión el LCD empezó a mostrar basura. La foto fue el diagnóstico: **símbolos
+nítidos y perfectamente dibujados** de la zona alta de la tabla, con el contraste y la
+retroiluminación impecables. Eso descarta contraste, alimentación y cable suelto, y es la firma de
+la **desincronización de nibbles**: el HD44780 trabaja en modo de 4 bits, con cada carácter partido
+en dos mitades, y si un pico eléctrico le hace perder una sola mitad, todo lo que sigue se arma con
+la mitad de un carácter y la mitad del siguiente.
+
+Se confirmó en el acto: el Monitor Serie mostraba los mismos datos **bien** (`Temp: 21.9 C |
+Calentador: OFF (OFF) | ... | WiFi: OK`, sin reinicios ni brownout), así que el programa estaba
+sano y era el display el que había perdido el paso. Y cuando Mariano lo desconectó y lo volvió a
+conectar, volvió a mostrar todo correcto — la prueba final: sólo le faltaba reinicializarse.
+
+**Qué lo causó**: no se puede probar después del hecho, y conviene decirlo así en vez de inventar
+una causa. Lo que sí se sabe es que ocurrió justo después de cablear el relé y el circuito de 12 V
+al lado del bus I2C, y que Mariano estaba con las manos en esos cables. Los candidatos, en orden:
+manipular los cables del I2C mientras se cableaba (un corte de contacto de milisegundos hace
+exactamente esto), el pico de conmutación del relé, el riel de 5 V cediendo con la tira ya
+conectada, y el acoplamiento de ruido si los cables del I2C corren al lado de los de potencia.
+
+**Lo que se hizo**: que el firmware sea inmune a la causa, sea cual sea. Cada 10 segundos, justo
+antes de reescribir el contenido, se le manda la secuencia de reenganche (tres veces el nibble
+`0x03`, que fuerza modo de 8 bits desde cualquier fase, y después `0x02`, que lo devuelve a 4
+bits). Reengancha desde **cualquier** estado, incluso si al display se le corta la alimentación y
+vuelve en modo de 8 bits.
+
+⚠️ **No se usa `lcd.init()` para esto**, aunque sea lo obvio: adentro tiene `delay(50)` y
+`delay(1000)` —verificado en `LiquidCrystal_I2C.cpp`—, y un segundo de loop congelado dejaría las
+luces clavadas y el sonido sordo, justo lo que este proyecto ya trabajó para sacarse de encima. Los
+nibbles se mandan a mano al expansor PCF8574, con el mapeo de la propia librería (P0=RS, P1=RW,
+P2=Enable, P3=luz, P4-P7=datos), y la secuencia completa cuesta unos 10 ms.
+
+**Gate**: compilado y cargado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de flash
+y 16 % de RAM**, `Hash of data verified`.
+
+**Pendiente**: subir `TELEGRAM_ESPERA_MS` (hoy 5 s, corto para esta red) y revisar
+`HANDSHAKE_TLS_SEGUNDOS`; y la consulta propia con long polling, que es lo que falta para que el
+bot conteste rápido.
+
+#### Atribución por modelo (sesión 2026-08-20, parte 2)
+- **Opus 5**: investigación de las alternativas (código de la librería en master, AsyncTelegram2,
+  API real de Telegram), envío propio, diagnóstico del LCD por la foto y el reenganche de nibbles,
+  carga del firmware y documentación.
+

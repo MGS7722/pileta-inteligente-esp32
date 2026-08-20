@@ -8,6 +8,51 @@
 
 ---
 
+## v5.5 — 2026-08-20 · El envío de Telegram deja de ser de la librería, y la pantalla se cura sola
+
+Dos problemas distintos de la misma tarde de taller, los dos de raíz.
+
+### Arreglado
+- **El bot ya no puede duplicar una respuesta.** El envío dejó de pasar por
+  `UniversalTelegramBot`: ahora se arma el POST a mano, se lee el `Content-Length` que manda el
+  servidor y se consumen **exactamente** esos bytes. El bug de la librería era que su lector corta
+  apenas leyó el primer bloque disponible (`if (responseReceived) break;`), así que cuando los
+  encabezados llegaban en un segmento TLS y el cuerpo en el siguiente se quedaba sin cuerpo, no
+  podía confirmar el envío, y `sendPostMessage()` reenviaba el mismo mensaje durante 8 segundos.
+  **Y lo más importante: el envío propio NO REINTENTA NUNCA.** Si algo falla queda en el Monitor
+  Serie y se sigue; un mensaje no puede duplicarse porque no existe el código que lo mandaría dos
+  veces. Verificado contra el servidor real antes de escribirlo: api.telegram.org responde
+  HTTP/1.1 con `Content-Length`, sin `chunked`, y acepta `keep-alive`.
+- **La pantalla se recupera sola.** El HD44780 trabaja en modo de 4 bits, con cada carácter
+  partido en dos mitades; si un pico eléctrico le hace perder una sola mitad, todo lo que sigue se
+  arma con la mitad de un carácter y la mitad del siguiente, y el display queda escribiendo
+  símbolos nítidos pero sin sentido. Pasó en hardware el 2026-08-20, después de cablear el relé de
+  12 V, y **no se recuperaba solo**: el programa lo inicializaba una única vez al arrancar. Ahora
+  se le manda la secuencia de reenganche cada 10 segundos, justo antes de reescribir el contenido,
+  así el hueco dura milisegundos y no se ve. Reengancha desde **cualquier** estado, incluso si al
+  display se le corta la alimentación y vuelve en modo de 8 bits.
+
+### Detalles que importan
+- El reenganche **no usa `lcd.init()`**, aunque sea lo obvio: esa función tiene `delay(50)` y
+  `delay(1000)` adentro (verificado en el código de la librería), y un segundo de loop congelado
+  dejaría las luces clavadas y el sonido sordo. Los nibbles se mandan a mano al expansor PCF8574 y
+  la secuencia completa cuesta unos 10 ms.
+- Todo lo que se muestra pasa ahora por `pantallaMostrar()`, un solo lugar, con las líneas
+  rellenadas a 16 caracteres — más barato y más seguro que un `lcd.clear()`.
+- Si la librería dejó restos sin leer en el socket (su bug), el envío los detecta y rearma la
+  conexión antes de mandar: leer la cola del pedido anterior como si fuera la respuesta propia
+  sería el error más difícil de entender de todos.
+
+### Todavía pendiente
+- **El límite para leer la confirmación quedó corto.** Se fijó en 5 s con la red del taller, y esa
+  tarde la red de la pileta (`UA-Alumnos`) se degradó a saludos TLS de **7 a 14,7 segundos**. El
+  envío funciona —los mensajes llegan— pero a veces no alcanza a leer la confirmación y lo informa
+  como fallo. Ver `docs/PENDIENTES.md` #15.
+- **La consulta sigue siendo de la librería**, así que sigue pagando un saludo TLS por vuelta y
+  pidiendo `limit=1`. Es lo que falta para que el bot conteste rápido: `docs/PENDIENTES.md` #7c.
+
+---
+
 ## v5.4 — 2026-08-20 · Telegram: la cola vieja y el buffer (el bucle de 8 s NO quedo resuelto)
 
 > ⚠️ **Verificado en hardware el mismo dia y el resultado fue NEGATIVO para la parte principal.**
