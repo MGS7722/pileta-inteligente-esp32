@@ -2096,7 +2096,18 @@ void configurarTelegram() {
 
 const char     HOST_TELEGRAM[]      = "api.telegram.org";
 const uint16_t PUERTO_TELEGRAM      = 443;
-const unsigned long TELEGRAM_ESPERA_MS = 5000;   // tope para leer una respuesta
+// Tope para leer una respuesta ya pedida. Empezó en 5 s, con los tiempos del
+// taller, y se subió a 15 s el 2026-08-20 con una medición concreta: en la red
+// de la pileta (`UA-Alumnos`, institucional y saturada) las consultas pasaron a
+// tardar de 7 a 14,7 segundos. Con 5 s los mensajes llegaban igual pero el
+// programa no alcanzaba a leer la confirmación y los informaba como fallo, que
+// es la peor combinación posible: anda, y el registro dice que no.
+//
+// No espera de más cuando la red está bien: es un TOPE, no una pausa. Y no se
+// tocó `HANDSHAKE_TLS_SEGUNDOS` a propósito — ahí no hay evidencia de que 5 s
+// esté cortando saludos que iban a completarse, y subirlo devolvería el riesgo
+// que costó encontrar el 2026-08-13 (el bot mudo dos minutos).
+const unsigned long TELEGRAM_ESPERA_MS = 15000;
 
 // Cuánto del cuerpo se guarda para decidir si Telegram aceptó el mensaje. El
 // veredicto (`"ok":true`) viene al principio; el resto se consume igual —para
