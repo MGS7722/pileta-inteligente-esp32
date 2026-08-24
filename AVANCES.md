@@ -1046,3 +1046,70 @@ líneas.
 - **Opus 5**: los cuatro tiempos, la extensión de la máquina de estados, la verificación en hardware
   y la documentación.
 
+
+### Sesión 2026-08-24 — El long polling reprobó el hardware, y el calentador dio su número
+
+**El cartucho calefactor, medido**
+
+Faltaba desde siempre: `COMPONENTES.md` decía "Cartucho calefactor 12V" y nada más. Con la
+fuente en C.V se leyó **12,0 V y 2,91 A → 4,11 Ω, 35 W**. La predicción hecha desde una lectura
+previa en C.C (10,4 V / 2,53 A) daba 2,92 A: erró por 10 mA.
+
+De paso quedó claro por qué la fuente no arrancaba: **con la perilla de CURRENT en cero no hay
+tensión**, porque el límite de corriente es un techo, no un acelerador. Y por qué hay que
+terminar en **C.V y no en C.C**: en C.C la tensión la fija la carga, así que sube sola a medida
+que el cartucho se calienta y su resistencia aumenta — la potencia nunca es la misma y la
+histéresis queda calibrada sobre un blanco móvil.
+
+**El calentador calienta de verdad, sumergido**
+
+Doce minutos de ciclo registrados en el Monitor Serie: de **17,90 °C a 21,81 °C**, o sea
+**0,33 °C/min**, curva monótona sin oscilar, con las luces en AUTO y los cuatro efectos
+probados en el medio. El corte de las 24:02 **no** fue por llegar al objetivo: fue por bajar la
+consigna a 20 con el agua en 21,8. Falta ver el corte automático y el re-encendido 2 °C abajo.
+
+**Long polling: la prueba que faltaba, y salió mal**
+
+`docs/PENDIENTES.md` #7c lo tenía propuesto desde el 20 de agosto con una advertencia: "durante
+la espera la tarea no cede CPU y hay que verificar el watchdog del núcleo 0". La advertencia era
+correcta y el resultado, peor de lo previsto. Con `bot.longPoll = 25`:
+
+```
+E (52188) task_wdt: Task watchdog got triggered.
+E (52188) task_wdt:  - IDLE0 (CPU 0)
+E (52188) task_wdt: Tasks currently running:  CPU 0: telegram
+E (52188) task_wdt: Aborting.  ->  Rebooting...
+```
+
+Cuatro reinicios en 130 segundos. La causa está en la librería, `readHTTPAnswer()`
+(`UniversalTelegramBot.cpp:106`): el bucle `while (millis() - now < longPoll * 1000 +
+waitForResponse)` **gira en vacío sin ceder el CPU** mientras no llegan datos. Treinta y tres
+segundos de giro dejan sin correr a IDLE0 y el watchdog reinicia. No se arregla desde afuera.
+
+**Lo que sí se rescató**: el mismo hallazgo explica por qué el bot "se moría" cinco minutos.
+Con `waitForResponse` de fábrica en 1500 ms, si la respuesta no empieza a llegar en esa ventana
+la librería abandona, `getUpdates()` devuelve 0 y **el mensaje no se consume**: queda en la cola
+y hay que esperar otra vuelta. Con la red del taller en 10,5 s de mediana, se perdían mensajes
+vuelta tras vuelta. Subido a **3000 ms** — no más, porque el giro dura eso mismo y pasando los
+5 s del watchdog reinicia igual.
+
+**Gate**: compilado y cargado con `arduino-cli` (core esp32 3.3.10) → sin errores, **87 % de
+flash y 16 % de RAM**, `Hash of data verified`. Verificado en hardware: **cero reinicios en
+140 s**, consultas de 3548 a 4653 ms, latido entre 0 y 3 s.
+
+**La otra cara de la prueba de los tres sistemas (#7b)**: en 45 minutos de captura del Monitor
+Serie no hubo **ni un solo brownout, reinicio, watchdog ni panic** con luces, calentador, LCD,
+WiFi y Telegram conviviendo. Dos ciclos completos de cobertor con las luces en AUTO, con 11 a
+23 ms de error sobre el tiempo pedido. **Lo que falta es el cruce**: mover los motores con el
+calentador prendido, que todavía no se dio en la misma ventana.
+
+**El aviso que sí apareció**: con las luces encendidas, activar el relé del calentador **bajó el
+brillo del LCD**. Es el riel de 5 V cediendo — 480 mA presupuestados contra los 500 mA que
+entrega un USB 2.0, y la bobina del relé (75 mA) es la que lo tumba. No llegó a brownout, pero
+es el aviso previo. La salida está documentada desde el 13/08: alimentar el ESP32 con un
+cargador de 2 A en vez del USB de la notebook.
+
+#### Atribución por modelo (sesión 2026-08-24)
+- **Opus 5**: medición del cartucho y la corrección del modo C.V/C.C de la fuente, análisis de
+  las capturas del Monitor Serie, lectura del código de `UniversalTelegramBot` hasta la causa
+  raíz del watchdog, la carga fallida del long polling y su reversión, y la documentación.

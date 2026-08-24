@@ -472,7 +472,13 @@ const uint16_t PRUEBA_MOTOR_DECIMAS = 20;   // 2,0 s
 // ============================================================
 
 const unsigned long INTERVALO_TEMP     = 2000;   // Cada cuánto se lee la temperatura (ms)
-const unsigned long INTERVALO_TELEGRAM = 2500;   // Cada cuánto se revisan mensajes (ms)
+
+// Cada cuánto se vuelve a consultar Telegram, en ms.
+//
+// Se queda en 2500: sin long polling —que se probó el 2026-08-24 y reinicia la
+// placa, ver el bloque del watchdog más abajo— cada consulta paga un saludo TLS
+// entero. Bajar este número no acelera nada y multiplica los saludos.
+const unsigned long INTERVALO_TELEGRAM = 2500;
 
 // Cuánto se le permite tardar al saludo TLS con Telegram, EN SEGUNDOS.
 //
@@ -495,6 +501,45 @@ const unsigned long INTERVALO_TELEGRAM = 2500;   // Cada cuánto se revisan mens
 // ciclo lo reintenta limpio, en vez de dejar el bot mudo dos minutos.
 const unsigned long HANDSHAKE_TLS_SEGUNDOS = 5;
 const unsigned long WIFI_TIMEOUT_MS    = 15000;  // Cuánto esperar al WiFi antes de rendirse
+
+// 🚫 LONG POLLING: PROBADO Y DESCARTADO EN HARDWARE EL 2026-08-24.
+//
+// La idea era `bot.longPoll = 25` para que Telegram dejara la consulta abierta y
+// contestara apenas llegara el mensaje, en vez de pagar un saludo TLS por vuelta
+// (docs/PENDIENTES.md #7c). **Reinicia la placa en bucle.** Registrado:
+//
+//   task_wdt: - IDLE0 (CPU 0) did not reset the watchdog in time
+//   Tasks currently running: CPU 0: telegram        -> Rebooting...
+//
+// Cuatro reinicios en 130 segundos. La causa está en la librería, en
+// `readHTTPAnswer()` (UniversalTelegramBot.cpp:106):
+//
+//   while (millis() - now < longPoll * 1000 + waitForResponse) {
+//       while (client->available()) { ... }
+//   }
+//
+// Ese bucle exterior GIRA EN VACÍO sin ceder el CPU mientras no haya datos. Con
+// long polling son 33 segundos de giro que dejan sin correr a IDLE0 en el núcleo
+// 0, y el watchdog de tarea reinicia. No se arregla desde afuera: habría que
+// tocar la librería, que es dependencia oficial y no se modifica.
+//
+// ⚠️ Y por el mismo motivo, `waitForResponse` NO puede subirse libremente: el
+// giro dura eso mismo, y pasando el techo del watchdog (5 s) reinicia igual.
+// De ahí el valor conservador de abajo.
+
+// Cuánto espera la librería a que EMPIECE a llegar el cuerpo de la respuesta.
+//
+// De fábrica son 1500 ms (UniversalTelegramBot.h). Si la respuesta no arranca
+// dentro de esa ventana, `readHTTPAnswer()` abandona, `getUpdates()` devuelve 0
+// y —esto es lo grave— **el mensaje no se consume**: queda en la cola de
+// Telegram y hay que esperar a la vuelta siguiente, que puede volver a fallar.
+// Con la red del taller en 10,5 s de mediana, eso hacía perder mensajes vuelta
+// tras vuelta: es el bot "muerto" cinco minutos que se vio el 2026-08-24.
+//
+// 3000 y no más: es el giro sin ceder CPU explicado arriba, y tiene que quedar
+// por debajo de los 5 s del watchdog de tarea con margen. Duplica la ventana
+// original sin acercarse al borde.
+const unsigned int TELEGRAM_ESPERA_CUERPO_MS = 3000;
 
 // Cuánto se le permite tardar a una consulta a Telegram antes de avisar por el
 // Monitor Serie. No corta nada: sólo deja registro de que esa vuelta salió cara,
@@ -725,6 +770,15 @@ bool telegramListo = false;
 // más. Desde afuera era invisible: la placa "parecía" sana. Con este latido, el
 // síntoma aparece en el Monitor Serie en vez de tener que adivinarlo.
 volatile unsigned long ultimoLatidoTelegram = 0;
+
+// Hasta cuánto puede tardar el latido SIN que eso signifique nada malo.
+//
+// El latido se refresca al principio de cada vuelta de tareaTelegram(), y esa
+// vuelta se va casi entera en la consulta: saludo TLS incluido, medido entre 3 y
+// 14,5 segundos en la red del taller. Un hueco de esa magnitud es normal; lo que
+// no lo es son los huecos de 60 o 117 segundos que dejó el saludo trabado el
+// 2026-08-13. El techo separa una cosa de la otra.
+const unsigned long TELEGRAM_LATIDO_TECHO_S = 30;
 
 // Si el WiFi se cae, el core reintenta solo; pero si pasa demasiado tiempo sin
 // volver, conviene forzar una reconexión limpia en vez de esperar para siempre.
@@ -1089,13 +1143,21 @@ void actualizarTemperatura() {
   Serial.print(" | Cobertor: ");
   Serial.print(estadoCobertorTexto());
 
-  // Salud de la conexión. Si el número de "Telegram late hace" empieza a crecer
-  // sin parar, la tarea del otro núcleo se colgó aunque todo lo demás ande bien.
+  // Salud de la conexión.
+  //
+  // La vuelta de la tarea se va casi entera esperando la consulta, así que un
+  // latido de varios segundos es normal. Lo que hay que mirar es el "(!)": ahí el
+  // hueco pasó el techo esperado y la tarea del otro núcleo se colgó de verdad,
+  // aunque todo lo demás ande bien.
+  const unsigned long latidoS = (millis() - ultimoLatidoTelegram) / 1000;
+
   Serial.print(" | WiFi: ");
   Serial.print(WiFi.status() == WL_CONNECTED ? "OK" : "CAIDO");
   Serial.print(" | Telegram late hace ");
-  Serial.print((millis() - ultimoLatidoTelegram) / 1000);
-  Serial.println("s");
+  Serial.print(latidoS);
+  Serial.print("s");
+  if (latidoS > TELEGRAM_LATIDO_TECHO_S) Serial.print(" (!)");
+  Serial.println();
 }
 
 void prenderCalentador() {
@@ -2312,6 +2374,14 @@ void configurarTelegram() {
   client.setCACert(TELEGRAM_CERTIFICATE_ROOT);
   client.setHandshakeTimeout(HANDSHAKE_TLS_SEGUNDOS);
   bot.maxMessageLength = TELEGRAM_BUFFER_BYTES;
+
+  // Campo PÚBLICO de la librería (UniversalTelegramBot.h), igual que
+  // maxMessageLength: se configura desde acá y la dependencia queda sin tocar,
+  // que es la regla del proyecto con las librerías oficiales.
+  //
+  // `bot.longPoll` se deja en su valor de fábrica (0) a propósito: subirlo
+  // reinicia la placa en bucle. Ver el bloque del watchdog en los TIEMPOS.
+  bot.waitForResponse = TELEGRAM_ESPERA_CUERPO_MS;
 }
 
 // ============================================================

@@ -13,7 +13,7 @@ Cada componente marcado con el sistema donde se usa, para saber qué queda libre
 | Display LCD 16x02 + I2C (PCF8574) | 1 | GEN | Muestra estado (lo comparten todos) |
 | Sensor temperatura DS18B20 | 2 | **S1** | Se usa 1 |
 | Módulo relé 1 canal 5V 10A | 2 | **S1** | Se usa 1 (prende el calentador) |
-| Cartucho calefactor 12V | 2 | **S1** | Se usa 1 |
+| Cartucho calefactor 12V | 2 | **S1** | Se usa 1. **Medido en el taller el 2026-08-24: 4,11 Ω → 2,91 A a 12,0 V = 35 W.** La fuente tiene que quedar en **C.V a 12 V** con el límite de corriente en ~3,8 A (30 % de margen); en C.C la tensión cae y la potencia varía sola a medida que el cartucho se calienta |
 | Módulo sensor de sonido KY-037 | 2 | **S2** | Se usa **1**, por su salida AO, alimentado a 5V. Su DO no se usa |
 | **Tira WS2812B 5V, 30 LED/m** | rollo 5 m | **S2** | Se usan **70 cm = 21 píxeles** (la vuelta completa a la pileta, medida en el taller el 2026-08-13). Reemplaza a los 8 LEDs |
 | LEDs 5mm (pack x100) | 1 | — | *Sin uso: los reemplazó la tira* |
