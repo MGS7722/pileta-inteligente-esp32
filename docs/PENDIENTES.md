@@ -42,6 +42,15 @@ de la notebook. Hacer eso **antes** de la prueba #7b.
 > `C:\Users\salam\Downloads\claude\MGS-Inventos\pileta-inteligente` (antes `claude\ESP32-proyecto`).
 > Al lado está `MGS-Inventos\tira-led`, que usa el segundo ESP32 y parte de la misma tira. Son dos
 > repositorios distintos; `MGS-Inventos\` es una carpeta del disco, sin git.
+>
+> **El inventario de hardware es UNO SOLO para los dos proyectos** (anotado el 2026-09-21): no se
+> compró nada aparte para la tira del monitor, así que **no queda ningún ESP32 libre** y del rollo
+> de tira quedan unos 81 píxeles. La cuenta al día está en
+> [`../PiletaInteligente/COMPONENTES.md`](../PiletaInteligente/COMPONENTES.md).
+>
+> **Nada pendiente de subir.** Verificado el 2026-09-21 con `git ls-remote origin master`: el remoto
+> está en `e27d668`, el mismo commit que la rama local. La nota de `AVANCES.md` que decía que
+> quedaba un commit sin subir quedó corregida.
 
 ---
 

@@ -1131,6 +1131,35 @@ absoluta en el proyecto, así que no hubo que tocar ningún archivo, y **`Pileta
 —el WiFi y el token del bot— viajó con la carpeta**: está en `.gitignore` desde siempre y nunca
 estuvo en un commit, verificado con `git log --all` antes de mover nada.
 
-**Queda un commit sin subir**, `7d407a8 fix(telegram): ventana de lectura a 3 s, y el long polling
-queda descartado`, de la sesión del 2026-08-24. No se subió acá porque es una decisión de Mariano,
-no un efecto de la mudanza.
+~~**Queda un commit sin subir**, `7d407a8 fix(telegram): ventana de lectura a 3 s, y el long polling
+queda descartado`, de la sesión del 2026-08-24.~~ ✅ **Ya no: está subido.** Verificado el
+2026-09-21 con `git ls-remote origin master`, que devuelve `e27d668` —el mismo commit que la rama
+local—, así que `7d407a8` viajó con él como ancestro. **El repositorio no tiene nada pendiente de
+subir.**
+
+---
+
+## 2026-09-21 (noche) — Repaso de coherencia, con el inventario aclarado
+
+Mariano aclaró un dato que la documentación de los dos proyectos daba por otra cosa: **el inventario
+de hardware es uno solo**. *«Todo lo que está en la lista de hardware de la pileta es lo que también
+usé para la tira LED, o sea no compré más hardware, sólo compré lo que está en la tira led de
+MercadoLibre: el soldador, la cinta y estaño y listo.»*
+
+De esta lista salieron, entonces, **el segundo ESP32 y 48 de los 150 píxeles del rollo**, que hoy
+están en la retroiluminación del monitor (`../tira-led`). Las tablas de `COMPONENTES.md` y de
+`PROYECTO.md` decían «2, se usa 1» sin decir dónde estaba el otro, así que se leían como si quedara
+uno libre. Quedaron corregidas, con la cuenta al día de qué hay **realmente** disponible: ningún
+ESP32, unos 81 píxeles de tira, y un ejemplar suelto de cada sensor.
+
+**Y una nota que ya era falsa:** la entrada de la mudanza decía que quedaba un commit sin subir.
+`git ls-remote origin master` devuelve `e27d668`, el mismo commit que la rama local — hace rato que
+no queda nada pendiente de subir.
+
+**Probado:** `arduino-cli compile --fqbn esp32:esp32:esp32` con el core 3.3.10 y las siete
+librerías fijadas → **sin errores, 87 % de flash y 16 % de RAM**, los mismos números de la v5.9. No
+se tocó una línea del firmware: los cambios son de documentación.
+
+#### Atribución por modelo (sesión 2026-09-21, noche)
+- **Opus 5 (1M)**: lectura completa de los dos proyectos, repaso de coherencia y correcciones de
+  documentación.

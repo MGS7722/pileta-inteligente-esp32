@@ -3,19 +3,35 @@
 Cada componente marcado con el sistema donde se usa, para saber qué queda libre.
 
 - **S1** = Calentador · **S2** = Luces disco · **S3** = Cobertor · **GEN** = general/compartido
+- **TIRA** = **está en uso en el otro proyecto**, [`../../tira-led`](../../tira-led) (la
+  retroiluminación del monitor)
+
+> ⚠️ **Esta lista es el inventario de TODO el hardware, no sólo el de la pileta** (anotado el
+> 2026-09-21). No se compró hardware aparte para el proyecto de la tira LED del monitor: de acá
+> salieron **el segundo ESP32 y 48 píxeles del rollo**. Lo único que se compró para aquel proyecto
+> fueron el soldador, el estaño, la cinta, el módulo detector PD y los Wagos.
+>
+> **Consecuencia práctica:** una fila que dice «2, se usa 1» ya **no** significa que quede uno
+> libre. Antes de dar por disponible cualquier componente, mirar la columna *Sistema*: lo que dice
+> **TIRA** está ocupado.
+>
+> **Al 2026-09-21 quedan libres:** 1 DS18B20 · 1 módulo relé · 1 cartucho calefactor · 1 KY-037 ·
+> 1 L298N · 1 fin de carrera · los 2 pulsadores · el pack de LEDs de 5 mm · 1 protoboard ·
+> **unos 81 píxeles de tira** · la fuente de laboratorio (compartida) · y **ningún ESP32**.
+> El **LCD 16×02 no está libre**: es la pantalla de estado de la pileta y está montado.
 
 ## Componentes que ya tenemos
 
 | Componente | Cant. | Sistema | Notas |
 |---|---|---|---|
-| NodeMCU ESP32 38 pines (USB-C) | 2 | GEN | Cerebro. Se usa 1 para toda la pileta |
+| NodeMCU ESP32 38 pines (USB-C) | 2 | GEN + **TIRA** | Cerebro. **Uno acá** (toda la pileta) y **el otro en la tira LED del monitor**. ⚠️ **No queda ninguno libre** |
 | Protoboard 830 puntos | 2 | GEN | Armado del circuito |
 | Display LCD 16x02 + I2C (PCF8574) | 1 | GEN | Muestra estado (lo comparten todos) |
 | Sensor temperatura DS18B20 | 2 | **S1** | Se usa 1 |
 | Módulo relé 1 canal 5V 10A | 2 | **S1** | Se usa 1 (prende el calentador) |
 | Cartucho calefactor 12V | 2 | **S1** | Se usa 1. **Medido en el taller el 2026-08-24: 4,11 Ω → 2,91 A a 12,0 V = 35 W.** La fuente tiene que quedar en **C.V a 12 V** con el límite de corriente en ~3,8 A (30 % de margen); en C.C la tensión cae y la potencia varía sola a medida que el cartucho se calienta |
 | Módulo sensor de sonido KY-037 | 2 | **S2** | Se usa **1**, por su salida AO, alimentado a 5V. Su DO no se usa |
-| **Tira WS2812B 5V, 30 LED/m** | rollo 5 m | **S2** | Se usan **70 cm = 21 píxeles** (la vuelta completa a la pileta, medida en el taller el 2026-08-13). Reemplaza a los 8 LEDs |
+| **Tira WS2812B 5V, 30 LED/m** | rollo 5 m = 150 px | **S2** + **TIRA** | Acá se usan **70 cm = 21 píxeles** (la vuelta completa a la pileta, medida en el taller el 2026-08-13). Otros **48 están pegados al monitor** en el proyecto de la tira. **Quedan ~81 libres (2,70 m)** |
 | LEDs 5mm (pack x100) | 1 | — | *Sin uso: los reemplazó la tira* |
 | Resistencias 220Ω (pack x50) | 1 | **S2** | **2 en serie (440Ω)** en la línea de datos de la tira |
 | Driver doble puente H L298N | 2 | **S3** | Se usa 1 (mueve los 2 motores del cobertor) |
