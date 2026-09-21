@@ -1,9 +1,47 @@
 # 📌 Pendientes — Pileta Inteligente
 
 > **Fuente única de pendientes del proyecto.** Si algo queda por hacer, se anota acá, no en el
-> README ni en un comentario del código. Actualizado el **2026-08-20**.
+> README ni en un comentario del código. Actualizado el **2026-09-21**.
 >
 > 🔴 = bloquea la entrega · 🟠 = importante · 🟡 = mejora
+
+---
+
+## ⏸️ Estado: etapa cerrada el 2026-09-21, con el hardware esperando
+
+Mariano pasa a un invento nuevo, así que esta etapa se cierra acá. **El proyecto no está
+terminado**, y conviene decirlo con todas las letras para que quien lo retome —él o una sesión
+futura— no lo lea como si lo estuviera.
+
+**Lo que está andando y verificado:** el calentador cumple su ciclo en AUTO, la tira de 21 píxeles
+sigue el ritmo con las tres bandas separadas, los dos motores del cobertor se mueven juntos con el
+corte por tiempo exacto (10 s midieron 10008 ms), y el bot de Telegram responde sin quedarse mudo
+ni duplicar mensajes. En 45 minutos de captura con los tres sistemas conviviendo no hubo un solo
+brownout, reinicio ni watchdog.
+
+**Lo que falta es casi todo trabajo físico o una decisión, no código:**
+
+| Qué falta | Quién |
+|---|---|
+| 🔴 #1 Montar el mecanismo con la lona y anotar los tiempos y velocidades definitivos | Mariano, en el taller |
+| 🔴 #7b Probar los tres sistemas a la vez **moviendo los motores con el calentador prendido** — es el único cruce que no se dio en la misma ventana | Mariano, en el taller |
+| 🟠 #1b Conectar los dos fines de carrera (ya no cortan el movimiento, sólo informan) | Mariano |
+| 🟠 #6 Calibrar el piso de ruido en el patio, que no es el del taller | Mariano, con `/espectro` |
+| 🟠 #7 Decidir si el ESP32 se reinicia solo cuando el bot se cuelga | decisión de Mariano |
+| 🟠 #7e Decidir qué hacer con los 3,5-5 s de latencia por consulta, o convivir con ellos | decisión de Mariano |
+| 🟠 #7d Encontrar con la lona puesta el par de velocidades que deja el hilo parejo | Mariano, en el taller |
+| 🟠 #11 **El único defecto de software abierto**: el limitador puede pintar la tira entera de negro sin avisar si `/leds` alcanza a `/corriente`. No está arreglado | código |
+
+**El aviso eléctrico que sigue en pie:** con las luces encendidas, activar el relé del calentador
+baja el brillo del LCD. Es el riel de 5 V cediendo —480 mA presupuestados contra los 500 mA de un
+USB 2.0, y la bobina del relé son 75 mA—. No llegó a brownout, pero es el aviso previo. La salida
+está documentada desde el 2026-08-13: **alimentar el ESP32 con un cargador de 2 A** en vez del USB
+de la notebook. Hacer eso **antes** de la prueba #7b.
+
+> **Dónde vive el proyecto desde el 2026-09-21:**
+> `C:\Users\salam\Downloads\claude\MGS-Inventos\pileta-inteligente` (antes `claude\ESP32-proyecto`).
+> Al lado está `MGS-Inventos\tira-led`, que usa el segundo ESP32 y parte de la misma tira. Son dos
+> repositorios distintos; `MGS-Inventos\` es una carpeta del disco, sin git.
 
 ---
 

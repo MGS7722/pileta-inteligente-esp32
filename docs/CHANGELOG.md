@@ -8,6 +8,40 @@
 
 ---
 
+## v5.9 — 2026-08-24 · El bot deja de perder mensajes, y el long polling queda descartado
+
+El bot dejaba de responder por minutos, y la causa no era la red sino **una ventana de lectura
+demasiado corta**. De fábrica, la librería espera 1500 ms a que *empiece* a llegar el cuerpo de la
+respuesta; si no llega, `readHTTPAnswer()` abandona, `getUpdates()` devuelve 0 y —esto es lo
+grave— **el mensaje no se consume**: queda en la cola de Telegram esperando otra vuelta, que vuelve
+a fallar. Con la red del taller en 10,5 s de mediana, se perdían mensajes vuelta tras vuelta.
+
+### Cambiado
+- **`waitForResponse` de 1500 a 3000 ms.** No más, y el techo tiene una razón medida: el bucle de
+  `readHTTPAnswer()` gira en vacío sin ceder el CPU durante toda esa ventana, y pasando los 5 s del
+  watchdog de tarea la placa reinicia.
+- `INTERVALO_TELEGRAM` se queda en 2500 ms, ahora con el porqué escrito: sin long polling, cada
+  consulta paga un saludo TLS entero, así que bajarlo no acelera nada y multiplica los saludos.
+
+### Descartado — el long polling, probado en hardware
+Estaba propuesto en `PENDIENTES.md` #7c. Con `bot.longPoll = 25` la placa entra en **bucle de
+reinicio**: cuatro reinicios en 130 segundos, con `task_wdt: IDLE0 (CPU 0) did not reset the
+watchdog in time` y `CPU 0: telegram`. La causa está en la librería
+(`UniversalTelegramBot.cpp:106`): el bucle exterior de `readHTTPAnswer()` gira sin ceder el CPU
+mientras no hay datos, y 33 segundos de giro dejan sin correr a IDLE0. No se arregla desde afuera
+—habría que modificar una dependencia oficial, cosa que este proyecto no hace— así que queda
+documentado en el propio código para que nadie lo reintente sin saber cómo terminó.
+
+### Anotado
+- El cartucho calefactor, medido en el taller: **4,11 Ω → 2,91 A a 12,0 V = 35 W**, con la nota de
+  que la fuente tiene que quedar en **C.V** y no en C.C.
+
+> **Esta entrada se escribió el 2026-09-21**, al cerrar la etapa: el cambio se había subido el
+> 2026-08-24 sin pasar por el changelog, y un changelog con huecos deja de servir para saber qué
+> tiene cargada la placa.
+
+---
+
 ## v5.8 — 2026-08-20 · Un tiempo para cada motor, en cada sentido
 
 El espejo exacto de las velocidades de la v5.7, y por el mismo motivo mecánico: los dos carretes no
