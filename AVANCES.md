@@ -1113,3 +1113,24 @@ cargador de 2 A en vez del USB de la notebook.
 - **Opus 5**: medición del cartucho y la corrección del modo C.V/C.C de la fuente, análisis de
   las capturas del Monitor Serie, lectura del código de `UniversalTelegramBot` hasta la causa
   raíz del watchdog, la carga fallida del long polling y su reversión, y la documentación.
+
+---
+
+## 2026-09-21 — El proyecto se mudó a `MGS-Inventos/pileta-inteligente`
+
+Mariano reorganizó sus proyectos de hardware bajo una carpeta madre. La ruta pasó de
+`C:\Users\salam\Downloads\claude\ESP32-proyecto` a
+`C:\Users\salam\Downloads\claude\MGS-Inventos\pileta-inteligente`, al lado de la tira LED del
+monitor (`MGS-Inventos\tira-led`), que es el proyecto que usa el segundo ESP32 y los 4,30 m de tira
+que sobraron de acá.
+
+**No cambió nada más que la ruta.** El repositorio sigue siendo
+`github.com/MGS7722/pileta-inteligente-esp32`, con su `.git` propio: compartir carpeta madre no es
+compartir repositorio, y `MGS-Inventos/` es una carpeta del disco sin git. No hay una sola ruta
+absoluta en el proyecto, así que no hubo que tocar ningún archivo, y **`PiletaInteligente/config.h`
+—el WiFi y el token del bot— viajó con la carpeta**: está en `.gitignore` desde siempre y nunca
+estuvo en un commit, verificado con `git log --all` antes de mover nada.
+
+**Queda un commit sin subir**, `7d407a8 fix(telegram): ventana de lectura a 3 s, y el long polling
+queda descartado`, de la sesión del 2026-08-24. No se subió acá porque es una decisión de Mariano,
+no un efecto de la mudanza.
