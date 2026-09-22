@@ -1,5 +1,8 @@
 # Control de avances — Pileta Inteligente
 
+> 🏁 **Proyecto TERMINADO y desmontado el 2026-09-21.** Lo que sigue es el registro de todo lo que
+> se hizo, cerrado. La última entrada, al final del documento, cuenta el cierre.
+>
 > Programa principal: **`PiletaInteligente/PiletaInteligente.ino`** (calentador + luces + Telegram, todo en un solo archivo).
 
 ## Sistema 1 — Calentador automático
@@ -1163,3 +1166,40 @@ se tocó una línea del firmware: los cambios son de documentación.
 #### Atribución por modelo (sesión 2026-09-21, noche)
 - **Opus 5 (1M)**: lectura completa de los dos proyectos, repaso de coherencia y correcciones de
   documentación.
+
+
+---
+
+## 2026-09-21 (cierre) — Proyecto terminado y hardware desmontado
+
+**Mariano desarmó la pileta y dio el proyecto por cerrado**, para pasar a un invento nuevo. No es
+una pausa: el aparato ya no existe armado y **todo el hardware volvió a la caja**.
+
+Con eso quedan cerrados, sin hacerse, los pendientes que sólo se podían resolver con el aparato
+delante: montar la lona y medir los tiempos definitivos (#1), conectar los fines de carrera (#1b),
+calibrar el piso de ruido en el patio (#6), encontrar el par de velocidades que deja el hilo parejo
+(#7d) y —el hueco más grande que deja el proyecto— **probar los tres sistemas a la vez con los
+motores moviéndose y el calentador prendido** (#7b), que es el único cruce que nunca se dio en la
+misma ventana. También quedan sin verificarse el ciclo del calentador con el cartucho sumergido
+(#3, no se podía probar en seco) y el costo real de refrescar el LCD (#16).
+
+**Lo que sí quedó probado, y es con lo que cierra el proyecto:** el calentador cumpliendo su ciclo
+en AUTO, la tira de 21 píxeles siguiendo el ritmo con las tres bandas separadas, los dos motores
+moviéndose juntos con el corte por tiempo exacto —10 s midieron 10008 ms—, el bot respondiendo sin
+quedarse mudo ni duplicar mensajes, y 45 minutos de captura con los tres sistemas conviviendo sin
+un solo brownout, reinicio ni watchdog.
+
+**Dos cosas siguen abiertas en el código y viajan con el firmware si alguna vez se reusa:** el
+defecto #11 —el limitador de corriente puede pintar la tira entera de negro sin avisar si `/leds`
+alcanza a `/corriente`— y el aliasing del #8. Ninguna se arregló.
+
+**El hardware que queda libre**, que es el punto de partida del próximo invento: **1 ESP32**, el
+LCD 16×02 con su I2C, los 2 motores Pololu con sus acoples, el L298N, el relé, el cartucho, el
+DS18B20, el KY-037, los fines de carrera, las 2 protoboards, los pulsadores y **unos 102 píxeles de
+tira** —los 81 que quedaban del rollo más el anillo de 21, ya cortado y con los cables soldados—,
+más la fuente de laboratorio. Lo único ocupado es lo que está en el monitor: el otro ESP32 y sus 48
+píxeles. La cuenta pieza por pieza está en
+[`PiletaInteligente/COMPONENTES.md`](PiletaInteligente/COMPONENTES.md).
+
+#### Atribución por modelo (sesión del 2026-09-21, noche)
+- **Opus 5 (1M)**: el cierre y la actualización del inventario.

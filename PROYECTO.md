@@ -1,5 +1,11 @@
 # Pileta Inteligente — Descripción completa del proyecto
 
+> 🏁 **Proyecto TERMINADO y desmontado el 2026-09-21.** El aparato ya no existe armado: Mariano lo
+> desarmó y el hardware volvió a la caja. Lo que sigue describe **cómo era y cómo funcionaba**, que
+> es exactamente lo que hace falta para volver a armarlo; el firmware quedó compilando en el
+> repositorio. Hasta dónde llegó cada sistema, y qué quedó sin probarse, está en
+> [`docs/PENDIENTES.md`](docs/PENDIENTES.md).
+
 ## Idea general
 Prototipo de pileta inteligente con tres sistemas principales, todos controlables remotamente
 desde un bot de Telegram. Todo corre en un solo ESP32 con el programa
@@ -71,20 +77,24 @@ Todos los sistemas se controlan desde un chat de Telegram (bot @ControlESP32Pile
 
 ## Componentes disponibles
 
+> 📦 **El proyecto se desmontó el 2026-09-21 y todo este hardware volvió a la caja.** La columna
+> *Uso* dice para qué servía cada pieza mientras el aparato existía; hoy **está todo libre**,
+> salvo lo que sigue montado en el monitor.
+>
 > ⚠️ **El inventario es uno solo y está compartido con el otro proyecto de hardware**
 > ([`../tira-led`](../tira-led), la retroiluminación del monitor): de esta misma lista salieron el
-> segundo ESP32 y 48 píxeles del rollo. **Una fila que dice «se usa 1» de 2 ya no significa que
-> quede uno libre.** La cuenta al día, componente por componente, está en
+> segundo ESP32 y 48 píxeles del rollo, **que sí siguen ocupados**. La cuenta al día, componente
+> por componente, está en
 > [`PiletaInteligente/COMPONENTES.md`](PiletaInteligente/COMPONENTES.md) (2026-09-21).
 
 | Componente | Cantidad | Uso |
 |---|---|---|
-| ESP32 38 pines | 2 | Cerebro del sistema. **Los dos en uso: uno acá y uno en la tira del monitor** |
+| ESP32 38 pines | 2 | Cerebro del sistema. **Uno libre desde el desmontaje**; el otro sigue en la tira del monitor |
 | Sensor DS18B20 sumergible | 2 | Temperatura del agua |
 | Módulo relé 1 canal 5V/10A | 2 | Control calentador |
 | Cartucho calefactor 12V | 2 | Calentador de agua |
 | Display LCD 16x02 + I2C | 1 | Pantalla de estado |
-| **Tira WS2812B 5V, 30 LED/m** | rollo de 5 m = 150 px | **Luces disco (se usan 70 cm = 21 píxeles)**. Otros 48 están en la tira del monitor; **quedan ~81 libres** |
+| **Tira WS2812B 5V, 30 LED/m** | rollo de 5 m = 150 px | Las luces disco usaban 70 cm = 21 píxeles, **recuperados al desmontar**. Los 48 del monitor siguen puestos; **quedan ~102 libres** |
 | Sensor de sonido KY-037 | 2 | Detección del ritmo (se usa **1**) |
 | Driver L298N doble puente H | 2 | Control motores cobertor |
 | Fin de carrera (limit switch) | 3 | Posición cobertor (se usan 2) |
